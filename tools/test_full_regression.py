@@ -170,6 +170,29 @@ class FullRegression(unittest.TestCase):
             main.MainWindow._check_scrcpy(window)
         start.assert_called_once()
 
+    def test_svip_entry_template_match(self):
+        # 入口用模板匹配（同福袋套路：归一 1080 宽 + ROI 内多尺寸 matchTemplate），
+        # 不写死像素坐标；合成一张贴图验证能命中且位置正确
+        import cv2
+        from scenarios.svip import find_entry_icon
+        from src.config import resource_path
+        tpl = cv2.imdecode(
+            np.fromfile(resource_path('resources/svip-entry.png'), dtype=np.uint8),
+            cv2.IMREAD_GRAYSCALE)
+        screen = np.full((1200, 1080, 3), 240, dtype=np.uint8)
+        size = 70
+        tx, ty = 900, 300  # 完整落在右侧图标列 ROI（x 880~1040, y 200~560）内
+        screen[ty:ty + size, tx:tx + size] = cv2.cvtColor(
+            cv2.resize(tpl, (size, size)), cv2.COLOR_GRAY2RGB)
+        hit = find_entry_icon(screen)
+        self.assertIsNotNone(hit)
+        cx, cy, score = hit
+        self.assertGreater(score, 0.90)
+        self.assertLess(abs(cx - (tx + size // 2)), 10)
+        self.assertLess(abs(cy - (ty + size // 2)), 10)
+        # 空白屏不应命中
+        self.assertIsNone(find_entry_icon(np.full((1200, 1080, 3), 240, dtype=np.uint8)))
+
     def test_moneybag_coins_accumulate_and_reset(self):
         # 福袋金币累计：同账号累加；换账号/配置变更清零重计
         import src.progress as prog

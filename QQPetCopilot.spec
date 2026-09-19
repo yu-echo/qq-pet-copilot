@@ -11,6 +11,7 @@ EXE_NAME = 'QQPetCopilot'
 _required = [
     'resources/app-icon.ico',
     'resources/moneybag-friend.png',
+    'resources/svip-entry.png',
     'resources/scrcpy-win64/scrcpy.exe',
     'resources/scrcpy-win64/adb.exe',
     'resources/scrcpy-win64/AdbWinApi.dll',

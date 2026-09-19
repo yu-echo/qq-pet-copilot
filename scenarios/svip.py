@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import time
+from functools import lru_cache
 
+from src.config import resource_path
 from src.progress import (
     log,
     save_svip_claim,
@@ -32,6 +34,50 @@ CLAIM_SETTLE_ATTEMPTS = 5
 OPEN_RECHECK_WAIT = 1.5
 # 等弹窗按钮出现的轮数（标题已出但按钮区可能还在加载）
 STATE_ATTEMPTS = 4
+# ---- 企鹅帽入口的模板匹配（照 src/moneybag.py friend_bag_points 的套路）----
+# 截图统一归一到 1080 宽后，只在右侧图标列这个 ROI 里多尺寸 matchTemplate：
+# 全屏匹配（得分 ~0.6）区分度不够，限定 ROI 后真机得分 0.99 且坐标精确
+ENTRY_ROI = (880, 1040, 200, 560)   # 1080 归一坐标下的 (x1, x2, y1, y2)
+ENTRY_TEMPLATE_SIZES = (52, 58, 64, 70, 76)
+ENTRY_MATCH_SCORE = 0.90            # 低于该分不认（福袋用的是 0.94）
+
+
+@lru_cache(maxsize=1)
+def _entry_template():
+    """企鹅帽参考图（np.fromfile 读是为了兼容中文路径）。"""
+    import cv2
+    import numpy as np
+
+    data = np.fromfile(resource_path('resources/svip-entry.png'), dtype=np.uint8)
+    return cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
+
+
+def find_entry_icon(screen):
+    """模板匹配找企鹅帽入口，命中返回 (x, y, score)，否则 None。
+
+    与 src/moneybag.py 的 friend_bag_points 同一套路：截图归一到 1080 宽
+    （分辨率无关），只在右侧图标列 ROI 内多尺寸 matchTemplate，取最高分。
+    """
+    import cv2
+
+    template = _entry_template()
+    if template is None:
+        return None
+    h, w = screen.shape[:2]
+    scale = 1080 / w
+    gray = cv2.resize(cv2.cvtColor(screen, cv2.COLOR_RGB2GRAY),
+                      (1080, round(h * scale)))
+    x1, x2, y1, y2 = ENTRY_ROI
+    x2, y2 = min(x2, gray.shape[1]), min(y2, gray.shape[0])
+    roi = gray[y1:y2, x1:x2]
+    best = None
+    for size in ENTRY_TEMPLATE_SIZES:
+        tile = cv2.resize(template, (size, size))
+        _, score, _, point = cv2.minMaxLoc(cv2.matchTemplate(roi, tile, cv2.TM_CCOEFF_NORMED))
+        if score >= ENTRY_MATCH_SCORE and (best is None or score > best[2]):
+            best = (round((x1 + point[0] + size / 2) / scale),
+                    round((y1 + point[1] + size / 2) / scale), float(score))
+    return best
 
 
 class SvipScenario(DeviceScenario):
@@ -166,10 +212,16 @@ class SvipScenario(DeviceScenario):
         return None
 
     def _find_entry(self) -> tuple[int, int, float] | None:
-        """在主页找企鹅帽入口（"点击有礼"），重试 ENTRY_ATTEMPTS 轮。"""
+        """在主页找企鹅帽入口，重试 ENTRY_ATTEMPTS 轮。
+
+        先试 content-desc / OCR 的"点击有礼"标签（标签并非一直渲染），
+        再模板匹配图标本身（find_entry_icon），都不中才算没找到。
+        """
         for attempt in range(1, ENTRY_ATTEMPTS + 1):
             screen = self.screen()
             hit = self.see('svip_entry', screen)
+            if hit is None:
+                hit = find_entry_icon(screen)
             if hit:
                 return hit
             log(f'主页未找到 SVIP 礼包入口，等待重试 ({attempt}/{ENTRY_ATTEMPTS})')

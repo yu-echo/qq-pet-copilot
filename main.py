@@ -1219,13 +1219,12 @@ class MainWindow(MSFluentWindow):
         # qfw 的 headerLayout 没有 stretch，QLabel 会平分多余宽度把后续元素挤到
         # 中间；尾部 addStretch(1) 让整排靠左紧跟标题
         card.headerLayout.setSpacing(6)
-        for caption, attr in (('账号名称', '_account_name_label'),
-                              ('宠物名称', '_pet_name_label')):
+        for index, (caption, attr) in enumerate(
+                (('账号名称', '_account_name_label'), ('宠物名称', '_pet_name_label'))):
+            if index:
+                card.headerLayout.addSpacing(24)  # 两组之间留大一点的间隔
             card.headerLayout.addWidget(CaptionLabel(caption))
-            label = StrongBodyLabel('')
-            font = label.font()
-            font.setPointSizeF(font.pointSizeF() + 1)  # 与下方数值同级但更醒目
-            label.setFont(font)
+            label = StrongBodyLabel('')  # 加粗但不再放大：真实数据比标注别太抢眼
             card.headerLayout.addWidget(label)
             setattr(self, attr, label)
         card.headerLayout.addStretch(1)

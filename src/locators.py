@@ -301,12 +301,11 @@ LOCATORS: dict[str, dict] = {
 
     # ---- 每日领取 QQ SVIP 会员礼包 ----
     # 主页宠物状态卡右侧图标列第二个（企鹅帽）。"点击有礼"小标签只在部分时候
-    # 渲染，不能只靠 OCR：真机 1200x2670 像素质心实测图标中心 (1067, 414)，
-    # 换算 720x1280 参考坐标 = (640, 198)。不能用 cache——需要"判断是否存在"。
+    # 渲染，不能只靠 OCR：模板匹配兜底（resources/svip-entry.png，
+    # 见 scenarios/svip.py 的 find_entry_icon），分辨率无关，不写死坐标。
     'svip_entry': {
         'xpath': ['//*[@content-desc="点击有礼"]'],
         'ocr': ['点击有礼'],
-        'rel': (640, 198),
     },
     # 礼包弹窗标题（"QQ SVIP专属礼包"；OCR 空格归一化后按子串匹配）
     'svip_dialog': {'ocr': ['SVIP专属礼包']},
