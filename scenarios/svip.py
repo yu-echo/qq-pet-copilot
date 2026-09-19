@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """每日领取 QQ SVIP 会员礼包场景。
 
-入口：主页宠物状态卡右上角的企鹅帽图标（"点击有礼"），点开是"QQ SVIP专属礼包"
-弹窗，三种状态：
+入口：主页宠物状态卡右侧图标列的企鹅帽（图标旁偶尔显示"点击有礼"标签）。
+定位顺序：content-desc / OCR 的"点击有礼"标签 -> 模板匹配图标本身
+（find_entry_icon，分辨率无关，见下方常量）。点开是"QQ SVIP专属礼包"弹窗，
 - 会员且今日未领：点"立即领取"领取，记进度后当天不再执行；
 - 会员且今日已领：按钮是"明日再来"，记进度后当天不再执行；
 - 非会员：按钮是"开通 SVIP"——关掉弹窗，并把 tasks.svip.enabled=false 写回
@@ -109,15 +110,8 @@ class SvipScenario(DeviceScenario):
     # ---- 主流程 ----
 
     def _claim_once(self) -> bool:
+        # state 已在 _open_and_read_state 里轮询读取并复核过"开通 SVIP"
         state, screen = self._open_and_read_state()
-
-        if state == 'open':
-            # 弹窗按钮区可能先渲染"开通 SVIP"模板再刷新成实际状态
-            # （真机见过同一入口一次"开通 SVIP"、一次"明日再来"），复核一轮防误判，
-            # 误判一次就会把任务误关。
-            time.sleep(OPEN_RECHECK_WAIT)
-            screen = self.screen()
-            state = self._dialog_state(screen)
 
         if state == 'open':
             log('SVIP礼包弹窗按钮是"开通 SVIP"（复核后仍是）：当前账号不是 SVIP 会员，'

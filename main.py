@@ -1229,7 +1229,6 @@ class MainWindow(MSFluentWindow):
             card.headerLayout.addWidget(label)
             setattr(self, attr, label)
         card.headerLayout.addStretch(1)
-        self._status_card = card
         self._status_title_name = ('', '')  # 当前显示的 (账号名, 宠物名)，去重用
         body = QWidget()
         layout = QHBoxLayout(body)

@@ -471,7 +471,7 @@ class FullRegression(unittest.TestCase):
 
     def test_svip_recheck_reopens_task_for_member(self):
         # 非会员自动关闭期间：每天探测一次，恢复会员 -> 自动写回 enabled=true
-        from datetime import datetime as dt, time as dtime
+        from datetime import time as dtime
         from scenarios.runner import TaskQueueRunner, _QueueTask
         runner = TaskQueueRunner.__new__(TaskQueueRunner)
         runner.svip = Mock()
