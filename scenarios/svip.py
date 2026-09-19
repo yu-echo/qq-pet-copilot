@@ -23,6 +23,8 @@ ENTRY_ATTEMPTS = 3
 DIALOG_ATTEMPTS = 5
 # 点"立即领取"后等奖励展示/弹窗刷新的轮数
 CLAIM_SETTLE_ATTEMPTS = 5
+# "开通 SVIP"复核等待（秒）：弹窗按钮区可能先渲染开通模板再刷新
+OPEN_RECHECK_WAIT = 1.5
 
 
 class SvipScenario(DeviceScenario):
@@ -54,24 +56,31 @@ class SvipScenario(DeviceScenario):
             raise RuntimeError('主页未找到 SVIP 礼包入口（点击有礼）')
         self.click(hit[0], hit[1])
         screen = self._wait_dialog()
-        source = None  # 弹窗判定统一走 OCR，屏幕截图已在 _wait_dialog 拿过
+        state = self._dialog_state(screen)
+        if state == 'open':
+            # 弹窗按钮区可能先渲染"开通 SVIP"模板再刷新成实际状态
+            # （真机见过同一入口一次"开通 SVIP"、一次"明日再来"），复核一轮防误判，
+            # 误判一次就会把任务误关。
+            time.sleep(OPEN_RECHECK_WAIT)
+            screen = self.screen()
+            state = self._dialog_state(screen)
 
-        if self.see('svip_open', screen):
-            log('SVIP礼包弹窗按钮是"开通 SVIP"：当前账号不是 SVIP 会员，'
+        if state == 'open':
+            log('SVIP礼包弹窗按钮是"开通 SVIP"（复核后仍是）：当前账号不是 SVIP 会员，'
                 '关闭弹窗并自动关闭 SVIP礼包 任务')
             self._close_dialog(screen)
             self._disable_task()
             return False
 
-        if self.see('svip_tomorrow', screen):
+        if state == 'tomorrow':
             log('SVIP礼包弹窗按钮是"明日再来"：今天已领取过')
             save_svip_claim(True)
             self._close_dialog(screen)
             return False
 
-        claim = self.see('svip_claim', screen)
-        if not claim:
+        if state != 'claim':
             raise RuntimeError('SVIP 弹窗未识别到 领取/明日再来/开通SVIP 任一按钮')
+        claim = self.see('svip_claim', screen)
         self.click(claim[0], claim[1])
         # 领取后可能有奖励展示，等弹窗变为"明日再来"或消失再收尾
         for _ in range(CLAIM_SETTLE_ATTEMPTS):
@@ -85,6 +94,18 @@ class SvipScenario(DeviceScenario):
         return True
 
     # ---- 分步 ----
+
+    def _dialog_state(self, screen) -> str | None:
+        """识别弹窗当前按钮状态：'claim'（立即领取）/ 'tomorrow'（明日再来）/
+        'open'（开通 SVIP）；都不匹配返回 None。顺序：先已领取再领取最后开通，
+        避免 OCR 碎片互相误命中。"""
+        if self.see('svip_tomorrow', screen):
+            return 'tomorrow'
+        if self.see('svip_claim', screen):
+            return 'claim'
+        if self.see('svip_open', screen):
+            return 'open'
+        return None
 
     def _find_entry(self) -> tuple[int, int, float] | None:
         """在主页找企鹅帽入口（"点击有礼"），重试 ENTRY_ATTEMPTS 轮。"""

@@ -395,7 +395,7 @@ class FullRegression(unittest.TestCase):
              patch.object(settings_mod, 'save_raw') as save_raw:
             settings_mod.migrate_tasks_order()
         save_raw.assert_called_once()
-        self.assertEqual(data['tasks']['order'], 'care>work>svip')
+        self.assertEqual(data['tasks']['order'], 'svip>care>work')
         data2 = {'tasks': {'order': 'care>svip>work'}}
         with patch.object(settings_mod, 'load_raw', return_value=data2), \
              patch.object(settings_mod, 'save_raw') as save_raw2:

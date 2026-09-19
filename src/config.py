@@ -220,7 +220,7 @@ class TaskItemConfig:
 @dataclass
 class TasksConfig:
     # 执行顺序（> 分隔，越靠前越优先）；不在 order 里的任务不调度
-    order: str = "care>school>friend_care>hire_friend>adventure>visit>pk>work>svip"
+    order: str = "svip>care>school>friend_care>hire_friend>adventure>visit>pk>work"
     # 主任务组（冒险/学习/打工/雇佣好友，互斥）组内优先级（> 分隔，越靠前越优先）；
     # 没列出的主任务按默认顺序兜底排最后
     main_order: str = "school>hire_friend>adventure>work"

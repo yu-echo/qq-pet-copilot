@@ -55,7 +55,7 @@ DEFAULTS = {
     'hire_friend.friend_name': '',
     'hire_friend.times_per_day': 8,
     'runner.engine': 'task_queue',
-    'tasks.order': 'care>school>friend_care>hire_friend>adventure>visit>pk>work>svip',
+    'tasks.order': 'svip>care>school>friend_care>hire_friend>adventure>visit>pk>work',
     'tasks.main_order': 'school>hire_friend>adventure>work',
     'tasks.failure_interval': 1800,
     'care.energy_threshold': 60,
@@ -216,7 +216,11 @@ NEW_TASK_KEYS = ('svip',)
 
 
 def migrate_tasks_order() -> None:
-    """老配置的 tasks.order 缺少新任务键时，追加到队尾并写回（保留注释）。"""
+    """老配置的 tasks.order 缺少新任务键时，插入到队首并写回（保留注释）。
+
+    新任务（如 svip）是每天只跑一次的轻量任务，放最前=最高优先：
+    到点后调度器下一轮就先执行它，不用等前面长任务排队。
+    """
     from src.progress import log
 
     try:
@@ -228,9 +232,9 @@ def migrate_tasks_order() -> None:
         missing = [k for k in NEW_TASK_KEYS if k not in keys]
         if not missing:
             return
-        set_value(data, 'tasks.order', '>'.join(keys + missing))
+        set_value(data, 'tasks.order', '>'.join(missing + keys))
         save_raw(data)
-        log(f'tasks.order 缺少新任务 {"/".join(missing)}，已自动追加到队尾'
+        log(f'tasks.order 缺少新任务 {"/".join(missing)}，已插入到队首'
             f'（重排顺序请到任务选项卡修改）')
     except Exception as e:  # noqa: BLE001 - 迁移失败不阻断启动
         log(f'tasks.order 迁移失败（{e}），请手动在任务选项卡把新任务加进执行顺序')
