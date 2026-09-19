@@ -1211,13 +1211,18 @@ class MainWindow(MSFluentWindow):
     def _build_status_card(self) -> HeaderCardWidget:
         """宠物状态卡片：体力/清洁/心情/金币/饼干/香皂 横排一行均匀分布。
 
-        标题动态带宠物名（护理 OCR 写进状态缓存的 pet_name，见 _refresh_stats），
-        检测不到名字时只显示"宠物状态"。
+        标题右侧独立标签显示宠物名（护理 OCR 写进状态缓存的 pet_name，
+        见 _refresh_stats），检测不到名字时不显示。
         """
         card = CompactCardWidget()
         card.setTitle('宠物状态')
+        self._pet_name_label = BodyLabel('')
+        self._pet_name_label.setTextColor(QColor(96, 96, 96), QColor(170, 170, 170))
+        # headerLayout: [titleLabel, stretch...] -> 插到下标 1 = 紧跟标题，间隔 16px
+        card.headerLayout.setSpacing(16)
+        card.headerLayout.insertWidget(1, self._pet_name_label)
         self._status_card = card
-        self._status_title_name = ''  # 当前标题里的宠物名（去重，避免每秒重设）
+        self._status_title_name = ''  # 当前显示的宠物名（去重，避免每秒重设）
         body = QWidget()
         layout = QHBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1355,10 +1360,8 @@ class MainWindow(MSFluentWindow):
         """
         if not self.btn_scrcpy.isChecked():
             return  # 画面镜像已关闭，不自动拉起
-        if (self._runner_proc is None or self._runner_proc.poll() is not None):
-            # 未点"开始"（调度器没在跑）：不自动拉起 scrcpy、不刷连接失败日志，
-            # 等用户点开始后再检测（避免设备没连时每 15 秒刷一条"启动后立刻退出"）
-            return
+        # 点不点"开始"都维护镜像：不跑自动化时也可能只想看画面/手动操作手机，
+        # 设备没连时的重试告警保留（用户需要知道连接状态）
         if not window_is_foreground(self) or self.isMinimized():
             self._bg_ticks += 1
             # 必须连续 SCRCPY_THROTTLE_TICKS 轮都判定后台才真正暂停：单次误判
@@ -1499,11 +1502,11 @@ class MainWindow(MSFluentWindow):
                 st = {}
                 for key, _label in STATUS_FIELDS:
                     self._status_values[key].setText('-')
-            # 宠物状态卡片标题带上宠物名（护理 OCR 识别的 pet_name），没有就不显示
+            # 宠物状态卡片标题右侧显示宠物名（护理 OCR 识别的 pet_name），没有就不显示
             name = str(st.get('pet_name') or '').strip()
             if name != self._status_title_name:
                 self._status_title_name = name
-                self._status_card.setTitle(f'宠物状态  {name}' if name else '宠物状态')
+                self._pet_name_label.setText(name)
         except Exception as e:
             self._queue_values['current'].setText(f'状态读取失败: {e}')
         try:

@@ -153,30 +153,22 @@ class FullRegression(unittest.TestCase):
         main.MainWindow._check_scrcpy(window)
         window._enable_scrcpy.assert_not_called()
 
-    def test_scrcpy_watchdog_idle_before_start(self):
-        # 未点"开始"（调度器没在跑）：看门狗不拉 scrcpy、不刷连接失败日志
+    def test_scrcpy_watchdog_runs_before_start(self):
+        # 看门狗不依赖"开始"：未跑调度器时也维护镜像（用户可能只想要画面）
         import main
-        window=NS(btn_scrcpy=Mock(), _runner_proc=None,
-                  _background_mirror_paused=False, _bg_ticks=0,
-                  _scrcpy_retry_at=0.0, _scrcpy_proc=None,
-                  _embed_tries=0, _embed_fail_logged=False,
-                  _embed_timer=Mock(), scrcpy_view=Mock(),
-                  _disable_scrcpy=Mock(), _enable_scrcpy=Mock())
-        window.btn_scrcpy.isChecked.return_value=True
+        window = NS(btn_scrcpy=Mock(), _runner_proc=None,
+                    _background_mirror_paused=False, _bg_ticks=0,
+                    _scrcpy_retry_at=0.0, _scrcpy_proc=None,
+                    _embed_tries=0, _embed_fail_logged=False,
+                    _embed_timer=NS(isActive=lambda: False, start=Mock()),
+                    scrcpy_view=Mock(),
+                    isActiveWindow=Mock(return_value=True),
+                    isMinimized=Mock(return_value=False),
+                    _disable_scrcpy=Mock(), _enable_scrcpy=Mock())
+        window.btn_scrcpy.isChecked.return_value = True
         with patch('main.start_scrcpy', return_value=Mock()) as start:
             main.MainWindow._check_scrcpy(window)
-        start.assert_not_called()
-        window._enable_scrcpy.assert_not_called()
-        window._disable_scrcpy.assert_not_called()
-        # 点了开始（子进程在跑）恢复正常看门狗：会走 start_scrcpy 拉镜像
-        window._runner_proc = NS(poll=lambda: None)
-        window.isActiveWindow = Mock(return_value=True)
-        window.isMinimized = Mock(return_value=False)
-        window._embed_timer = NS(isActive=lambda: False, start=Mock())
-        with patch('main.start_scrcpy', return_value=Mock()) as start2:
-            main.MainWindow._check_scrcpy(window)
-        start2.assert_called_once()
-        window._enable_scrcpy.assert_not_called()
+        start.assert_called_once()
 
     def test_moneybag_coins_accumulate_and_reset(self):
         # 福袋金币累计：同账号累加；换账号/配置变更清零重计
@@ -495,6 +487,39 @@ class FullRegression(unittest.TestCase):
             settings_mod.migrate_tasks_order()
         save_raw2.assert_not_called()
 
+
+    def test_wait_employed_back_exits_when_employment_ends(self):
+        # 真机 bug 回归：雇佣自然到期回主页（面板消失）后，等待循环必须退出，
+        # 不能无限空转卡死整个调度器
+        from scenarios.employed import EmployedScenario
+        sc = EmployedScenario.__new__(EmployedScenario)
+        sc.dev = NS(click=lambda *a: None)
+        sc.screen = Mock(return_value=object())
+        sc.employed_recall_ready = Mock(return_value=False)
+        sc.ensure_main_page = Mock()
+        sc._recall_employed = Mock()
+        # 前两轮还能看到"被雇佣中"，之后连续消失 -> 应退出且不召回
+        states = [(10, 20, 1), (10, 20, 1), None, None, None, None]
+        sc.see = lambda key, screen=None, source=None: (
+            states.pop(0) if key == 'employed_in' else None)
+        with patch('src.scenario.time.sleep'):
+            sc.wait_employed_back(check_interval=0.01)
+        sc._recall_employed.assert_not_called()
+        sc.ensure_main_page.assert_called_once()
+
+    def test_wait_employed_back_recalls_when_ready(self):
+        # 召回条件满足：正常走召回，不受"面板消失"退出影响
+        from scenarios.employed import EmployedScenario
+        sc = EmployedScenario.__new__(EmployedScenario)
+        sc.dev = NS(click=lambda *a: None)
+        sc.screen = Mock(return_value=object())
+        sc.employed_recall_ready = Mock(return_value=True)
+        sc.see = Mock(return_value=(10, 20, 1))
+        sc._recall_employed = Mock()
+        sc.ensure_main_page = Mock()
+        with patch('src.scenario.time.sleep'):
+            sc.wait_employed_back(check_interval=0.01)
+        sc._recall_employed.assert_called_once()
 
     def test_pk_round_cap(self):
         self.assertEqual(PKScenario._round_limit(15,14),15)
