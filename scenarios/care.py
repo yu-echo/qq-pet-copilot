@@ -537,6 +537,7 @@ class CareScenario(DeviceScenario):
         if new_name and old_name and new_name != old_name:
             reset_daily_progress_for_pet(new_name)
         update_status(None,
+                      account_name=status.get('账号名称'),
                       pet_name=status.get('宠物名称'),
                       energy=status.get('体力'),
                       clean=status.get('清洁'),

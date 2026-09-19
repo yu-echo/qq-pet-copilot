@@ -1211,23 +1211,26 @@ class MainWindow(MSFluentWindow):
     def _build_status_card(self) -> HeaderCardWidget:
         """宠物状态卡片：体力/清洁/心情/金币/饼干/香皂 横排一行均匀分布。
 
-        标题右侧独立标签显示宠物名（护理 OCR 写进状态缓存的 pet_name，
-        见 _refresh_stats），检测不到名字时不显示。
+        标题右侧并排两组「标注 + 名字」：账号名称、宠物名称（护理 OCR 写进
+        状态缓存，见 _refresh_stats）；识别不到时对应值留空。
         """
         card = CompactCardWidget()
         card.setTitle('宠物状态')
-        # 宠物名用与下方数值同级的加粗样式，字号再大一号更醒目
-        self._pet_name_label = StrongBodyLabel('')
-        font = self._pet_name_label.font()
-        font.setPointSizeF(font.pointSizeF() + 1)
-        self._pet_name_label.setFont(font)
-        # qfw 的 headerLayout 没有 stretch，QLabel 会平分多余宽度把名字挤到中间；
-        # 尾部加 stretch 让「宠物状态 名字」都靠左紧跟（间隔 16px）
-        card.headerLayout.setSpacing(16)
-        card.headerLayout.addWidget(self._pet_name_label)
+        # qfw 的 headerLayout 没有 stretch，QLabel 会平分多余宽度把后续元素挤到
+        # 中间；尾部 addStretch(1) 让整排靠左紧跟标题
+        card.headerLayout.setSpacing(6)
+        for caption, attr in (('账号名称', '_account_name_label'),
+                              ('宠物名称', '_pet_name_label')):
+            card.headerLayout.addWidget(CaptionLabel(caption))
+            label = StrongBodyLabel('')
+            font = label.font()
+            font.setPointSizeF(font.pointSizeF() + 1)  # 与下方数值同级但更醒目
+            label.setFont(font)
+            card.headerLayout.addWidget(label)
+            setattr(self, attr, label)
         card.headerLayout.addStretch(1)
         self._status_card = card
-        self._status_title_name = ''  # 当前显示的宠物名（去重，避免每秒重设）
+        self._status_title_name = ('', '')  # 当前显示的 (账号名, 宠物名)，去重用
         body = QWidget()
         layout = QHBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1279,11 +1282,6 @@ class MainWindow(MSFluentWindow):
         """
         card = CompactCardWidget()
         card.setTitle('今日统计')
-        # 标题右侧显示宠物名（换宠物会重置这些当日计数，标注一下当前是谁的统计）
-        self._today_name_label = StrongBodyLabel('')
-        card.headerLayout.setSpacing(16)
-        card.headerLayout.addWidget(self._today_name_label)
-        card.headerLayout.addStretch(1)
         body = QWidget()
         grid = QGridLayout(body)
         grid.setContentsMargins(0, 0, 0, 0)
@@ -1512,12 +1510,13 @@ class MainWindow(MSFluentWindow):
                 st = {}
                 for key, _label in STATUS_FIELDS:
                     self._status_values[key].setText('-')
-            # 宠物状态卡片标题右侧显示宠物名（护理 OCR 识别的 pet_name），没有就不显示
-            name = str(st.get('pet_name') or '').strip()
-            if name != self._status_title_name:
-                self._status_title_name = name
-                self._pet_name_label.setText(name)
-                self._today_name_label.setText(name)
+            # 标题右侧显示 账号名称 / 宠物名称（护理 OCR 写入状态缓存）
+            names = (str(st.get('account_name') or '').strip(),
+                     str(st.get('pet_name') or '').strip())
+            if names != self._status_title_name:
+                self._status_title_name = names
+                self._account_name_label.setText(names[0])
+                self._pet_name_label.setText(names[1])
         except Exception as e:
             self._queue_values['current'].setText(f'状态读取失败: {e}')
         try:
