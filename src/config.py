@@ -93,7 +93,7 @@ class WorkConfig:
     location: str = "风铃旅社"
     # 打工时长选择：10分钟（select_box_1）/ 45分钟（select_box_2）/ 2小时（select_box_3），
     # 打工与雇佣好友共用
-    duration: str = "45分钟"
+    duration: str = "10分钟"
     # 每天打工次数上限，0 为不限
     times_per_day: int = 0
     # 已不再使用：旧流程"下滑找雇佣按钮"已移除（当前页没有雇佣按钮时直接关闭面板开工），
@@ -141,7 +141,7 @@ class AdventureConfig:
 @dataclass
 class CareConfig:
     # 护理方式：ocr检测（读宠物状态，低于阈值手动喂食/洗澡）/ 一键护理（直接点主页面的一键护理按钮）
-    method: str = "一键护理"
+    method: str = "ocr检测"
     # 体力阈值：低于则喂食到达标
     energy_threshold: int = 60
     # 清洁阈值：低于则洗澡到达标
@@ -249,7 +249,7 @@ class RunnerConfig:
 @dataclass
 class RecoverConfig:
     # 异常恢复方式：重启设备（adb reboot，彻底）/ 重启游戏（只强停并重开 QQ，快）
-    method: str = "重启设备"
+    method: str = "重启游戏"
 
 
 
