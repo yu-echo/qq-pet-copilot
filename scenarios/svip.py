@@ -25,6 +25,8 @@ DIALOG_ATTEMPTS = 5
 CLAIM_SETTLE_ATTEMPTS = 5
 # "开通 SVIP"复核等待（秒）：弹窗按钮区可能先渲染开通模板再刷新
 OPEN_RECHECK_WAIT = 1.5
+# 等弹窗按钮出现的轮数（标题已出但按钮区可能还在加载）
+STATE_ATTEMPTS = 4
 
 
 class SvipScenario(DeviceScenario):
@@ -56,7 +58,15 @@ class SvipScenario(DeviceScenario):
             raise RuntimeError('主页未找到 SVIP 礼包入口（点击有礼）')
         self.click(hit[0], hit[1])
         screen = self._wait_dialog()
-        state = self._dialog_state(screen)
+        # 标题出了按钮区可能还在加载：轮询等按钮状态出现，避免误报"没识别到按钮"
+        state = None
+        for attempt in range(1, STATE_ATTEMPTS + 1):
+            state = self._dialog_state(screen)
+            if state is not None:
+                break
+            log(f'等待礼包弹窗按钮出现 ({attempt}/{STATE_ATTEMPTS})')
+            time.sleep(CLICK_INTERVAL)
+            screen = self.screen()
         if state == 'open':
             # 弹窗按钮区可能先渲染"开通 SVIP"模板再刷新成实际状态
             # （真机见过同一入口一次"开通 SVIP"、一次"明日再来"），复核一轮防误判，

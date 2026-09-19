@@ -560,22 +560,24 @@ class Runner:
         if not hasattr(self, '_moneybag_next') or time.monotonic() < self._moneybag_next:
             return False
         self._moneybag_next = time.monotonic() + INTERVAL
+        collector = None
         try:
             collector = MoneyBagCollector(self.school.dev)
             result = bool(collector.run())
-            coins = getattr(collector, 'coins', 0)
-            if result and coins > 0:
-                # 累计金币（换账号/配置变更自动清零，见 progress.add_moneybag_coins）
-                try:
-                    from src.status_cache import load_accounts
-                    acc = load_accounts().get('default') or {}
-                except Exception:
-                    acc = {}
-                add_moneybag_coins(coins, pet_name=acc.get('pet_name'))
-            return result
         except Exception as exc:
             log(f'成长福袋巡检暂停：{exc}；稍后再检查')
-            return False
+            result = False
+        # 中途异常也已领到的金币同样要入账（否则累计会漏掉半途那几个）
+        coins = getattr(collector, 'coins', 0) if collector is not None else 0
+        if coins > 0:
+            # 累计金币（换账号/配置变更自动清零，见 progress.add_moneybag_coins）
+            try:
+                from src.status_cache import load_accounts
+                acc = load_accounts().get('default') or {}
+            except Exception:
+                acc = {}
+            add_moneybag_coins(coins, pet_name=acc.get('pet_name'))
+        return result
 
     def _ensure_pet_page_or_relaunch(self) -> None:
         '''真机启动检查：识别不到宠物主页面时，不在当前页面按 back（可能根本不在游戏里，
