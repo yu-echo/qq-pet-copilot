@@ -38,7 +38,7 @@ DEFAULTS = {
     'schedule.encourage_times': 10,
     'adventure.times_per_day': 1,
     'adventure.start_time': '08:00',
-    'adventure.skip_bad_weather': False,
+    'adventure.skip_bad_weather': True,
     'adventure.batch': 12,
     'visit.times_per_day': 10,
     'visit.start_time': '00:01',

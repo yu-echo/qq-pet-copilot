@@ -129,6 +129,7 @@ class FullRegression(unittest.TestCase):
         window=NS(btn_scrcpy=Mock(), isActiveWindow=Mock(return_value=False),
                   isMinimized=Mock(return_value=False), _background_mirror_paused=False,
                   _bg_ticks=0,
+                  _runner_proc=NS(poll=lambda: None),  # 调度器在跑，看门狗才工作
                   _disable_scrcpy=Mock(), _enable_scrcpy=Mock())
         window.btn_scrcpy.isChecked.return_value=True
         # 防抖：单次或不足 SCRCPY_THROTTLE_TICKS 轮的"后台"判定不触发暂停，
@@ -151,6 +152,56 @@ class FullRegression(unittest.TestCase):
         window.btn_scrcpy.isChecked.return_value=False
         main.MainWindow._check_scrcpy(window)
         window._enable_scrcpy.assert_not_called()
+
+    def test_scrcpy_watchdog_idle_before_start(self):
+        # 未点"开始"（调度器没在跑）：看门狗不拉 scrcpy、不刷连接失败日志
+        import main
+        window=NS(btn_scrcpy=Mock(), _runner_proc=None,
+                  _background_mirror_paused=False, _bg_ticks=0,
+                  _scrcpy_retry_at=0.0, _scrcpy_proc=None,
+                  _embed_tries=0, _embed_fail_logged=False,
+                  _embed_timer=Mock(), scrcpy_view=Mock(),
+                  _disable_scrcpy=Mock(), _enable_scrcpy=Mock())
+        window.btn_scrcpy.isChecked.return_value=True
+        with patch('main.start_scrcpy', return_value=Mock()) as start:
+            main.MainWindow._check_scrcpy(window)
+        start.assert_not_called()
+        window._enable_scrcpy.assert_not_called()
+        window._disable_scrcpy.assert_not_called()
+        # 点了开始（子进程在跑）恢复正常看门狗：会走 start_scrcpy 拉镜像
+        window._runner_proc = NS(poll=lambda: None)
+        window.isActiveWindow = Mock(return_value=True)
+        window.isMinimized = Mock(return_value=False)
+        window._embed_timer = NS(isActive=lambda: False, start=Mock())
+        with patch('main.start_scrcpy', return_value=Mock()) as start2:
+            main.MainWindow._check_scrcpy(window)
+        start2.assert_called_once()
+        window._enable_scrcpy.assert_not_called()
+
+    def test_moneybag_coins_accumulate_and_reset(self):
+        # 福袋金币累计：同账号累加；换账号/配置变更清零重计
+        import src.progress as prog
+        from src.moneybag import parse_coins
+        self.assertEqual(parse_coins('成长福袋获得120金币'), 120)
+        self.assertEqual(parse_coins('获得 1,000 金币'), 1000)
+        self.assertEqual(parse_coins('没有数字'), 0)
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / 'moneybag_stats.json'
+            with patch.object(prog, 'MONEYBAG_STATS_FILE', f), \
+                 patch.object(prog, '_moneybag_config_sig', return_value='sig-1'):
+                prog.add_moneybag_coins(50, pet_name='A')
+                st = prog.add_moneybag_coins(70, pet_name='A')
+                self.assertEqual(st['coins'], 120)
+                self.assertEqual(st['bags'], 2)
+                self.assertEqual(prog.load_moneybag_stats()['coins'], 120)
+                st = prog.add_moneybag_coins(10, pet_name='B')  # 换账号 -> 清零
+                self.assertEqual(st['coins'], 10)
+                self.assertEqual(st['pet_name'], 'B')
+            with patch.object(prog, 'MONEYBAG_STATS_FILE', f), \
+                 patch.object(prog, '_moneybag_config_sig', return_value='sig-2'):
+                st = prog.add_moneybag_coins(5, pet_name='B')  # 配置变更 -> 清零
+                self.assertEqual(st['coins'], 5)
+
 
     def test_disable_scrcpy_hands_off_before_killing_mirror(self):
         import main

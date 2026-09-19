@@ -133,7 +133,7 @@ class AdventureConfig:
     # 冒险调度时间（HH:MM），到达后优先冒险
     start_time: str = "08:00"
     # 开始冒险后检测冒险详情框：出现"天色不对"就点召回->确认召回，计入一次冒险
-    skip_bad_weather: bool = False
+    skip_bad_weather: bool = True
     # 一轮连跑的冒险次数（跑满后回主页面）
     batch: int = 12
 

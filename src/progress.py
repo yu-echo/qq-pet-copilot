@@ -145,6 +145,56 @@ def svip_claimed_today() -> bool:
     return done
 
 
+# ---- 成长福袋累计金币（跨天累计；换账号/配置变更后清零重计） ----
+
+MONEYBAG_STATS_FILE = PROJECT_ROOT / 'runs' / 'moneybag_stats.json'
+
+
+def _moneybag_config_sig() -> str:
+    """config.yaml 指纹（修改时间 + 大小）：配置文件一变，福袋累计清零重计。"""
+    try:
+        st = (PROJECT_ROOT / 'config.yaml').stat()
+        return f'{st.st_mtime_ns}-{st.st_size}'
+    except OSError:
+        return ''
+
+
+def add_moneybag_coins(coins: int, bags: int = 1, pet_name: str | None = None) -> dict:
+    """累加一次福袋领取的金币/个数并落盘，返回更新后的累计。
+
+    清零条件（满足其一）：config.yaml 变更；宠物名与上次记录不同（换账号）。
+    宠物名从未识别出来时不影响累计（不当作换账号）。
+    """
+    data = progress_store.read_raw(MONEYBAG_STATS_FILE)
+    sig = _moneybag_config_sig()
+    name = str(pet_name or '').strip()
+    prev_name = str(data.get('pet_name') or '').strip()
+    if data.get('config_sig') != sig or (name and prev_name and name != prev_name):
+        data = {}  # 换账号或配置变更：清零重计
+    new = {
+        'pet_name': name or prev_name,
+        'config_sig': sig,
+        'coins': progress_store.to_int(data.get('coins', 0)) + int(coins or 0),
+        'bags': progress_store.to_int(data.get('bags', 0)) + max(1, int(bags or 1)),
+        'updated': time.strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    progress_store.write_raw(MONEYBAG_STATS_FILE, new)
+    if new['coins']:
+        log(f'福袋累计: 本次 +{coins} 金币，共 {new["coins"]} 金币'
+            f'（{new["bags"]} 个，宠物 {new["pet_name"] or "未识别"}）')
+    return new
+
+
+def load_moneybag_stats() -> dict:
+    """读取福袋累计（供 GUI 今日统计显示）。"""
+    data = progress_store.read_raw(MONEYBAG_STATS_FILE)
+    return {
+        'pet_name': str(data.get('pet_name') or ''),
+        'coins': progress_store.to_int(data.get('coins', 0)),
+        'bags': progress_store.to_int(data.get('bags', 0)),
+    }
+
+
 # 活动类型 -> (进度文件, 中文量词, 计数名)，用于出门时等完别的活动后的交叉计数
 CROSS_PROGRESS = {
     'school': (SCHOOL_PROGRESS_FILE, '一节课', '学习'),

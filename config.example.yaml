@@ -66,7 +66,7 @@ adventure:
   start_time: "08:00"
   # 开始冒险 6 秒后检测冒险详情框：出现"天色不对"就点召回 -> 确认召回，
   # 计入一次冒险完成；false 则照常等冒险结束
-  skip_bad_weather: false
+  skip_bad_weather: true
 
 care:
   # 护理方式：ocr检测（读宠物状态，低于阈值手动喂食/洗澡）/

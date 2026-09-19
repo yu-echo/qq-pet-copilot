@@ -86,6 +86,7 @@ from src.progress import (
     VISIT_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
     exp_daily_done,
+    add_moneybag_coins,
     load_durations,
     load_progress,
     log,
@@ -560,7 +561,18 @@ class Runner:
             return False
         self._moneybag_next = time.monotonic() + INTERVAL
         try:
-            return bool(MoneyBagCollector(self.school.dev).run())
+            collector = MoneyBagCollector(self.school.dev)
+            result = bool(collector.run())
+            coins = getattr(collector, 'coins', 0)
+            if result and coins > 0:
+                # 累计金币（换账号/配置变更自动清零，见 progress.add_moneybag_coins）
+                try:
+                    from src.status_cache import load_accounts
+                    acc = load_accounts().get('default') or {}
+                except Exception:
+                    acc = {}
+                add_moneybag_coins(coins, pet_name=acc.get('pet_name'))
+            return result
         except Exception as exc:
             log(f'成长福袋巡检暂停：{exc}；稍后再检查')
             return False

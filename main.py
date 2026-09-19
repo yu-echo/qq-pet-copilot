@@ -101,6 +101,7 @@ from src.progress import (
     load_exp_daily,
     load_progress,
     load_svip_claim,
+    load_moneybag_stats,
     log,
 )
 from src.stats_chart import StatsPanel
@@ -1275,7 +1276,8 @@ class MainWindow(MSFluentWindow):
         self._today_values = {}
         fields = (('study_h', '学习(h)'), ('work_h', '工作(h)'),
                   ('学习', '学习'), ('打工', '打工'), ('冒险', '冒险'),
-                  ('踩踩', '踩踩'), ('经验日常', '经验日常'), ('PK', 'PK'), ('被雇佣', '被雇佣'))
+                  ('踩踩', '踩踩'), ('经验日常', '经验日常'), ('PK', 'PK'), ('被雇佣', '被雇佣'),
+                  ('福袋', '福袋'))
         for i, (key, label) in enumerate(fields):
             cell = QWidget()
             cell_layout = QVBoxLayout(cell)
@@ -1339,6 +1341,10 @@ class MainWindow(MSFluentWindow):
                 log('未找到 scrcpy 窗口，嵌入失败（调度器仍可正常开始，'
                     '窗口出现后看门狗会自动补嵌入）')
 
+    def _runner_running(self) -> bool:
+        """调度器子进程是否在跑（未点开始/已停止都算没在跑）。"""
+        return self._runner_proc is not None and self._runner_proc.poll() is None
+
     def _check_scrcpy(self) -> None:
         """看门狗：scrcpy 进程掉了（设备 adb reboot/掉线会断开）就重拉并重嵌入。
 
@@ -1349,6 +1355,10 @@ class MainWindow(MSFluentWindow):
         """
         if not self.btn_scrcpy.isChecked():
             return  # 画面镜像已关闭，不自动拉起
+        if (self._runner_proc is None or self._runner_proc.poll() is not None):
+            # 未点"开始"（调度器没在跑）：不自动拉起 scrcpy、不刷连接失败日志，
+            # 等用户点开始后再检测（避免设备没连时每 15 秒刷一条"启动后立刻退出"）
+            return
         if not window_is_foreground(self) or self.isMinimized():
             self._bg_ticks += 1
             # 必须连续 SCRCPY_THROTTLE_TICKS 轮都判定后台才真正暂停：单次误判
@@ -1522,6 +1532,8 @@ class MainWindow(MSFluentWindow):
                     values['经验日常'] = '✓' if exp_done else '✗'
             for key, text in values.items():
                 self._today_values[key].setText(text)
+            # 福袋累计金币（换账号/配置变更后自动清零重计，见 progress.add_moneybag_coins）
+            self._today_values['福袋'].setText(str(load_moneybag_stats()['coins']))
         except Exception as e:
             self._today_values['study_h'].setText('读取失败')
             self._today_values['study_h'].setToolTip(str(e))
