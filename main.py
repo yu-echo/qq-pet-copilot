@@ -1216,8 +1216,11 @@ class MainWindow(MSFluentWindow):
         """
         card = CompactCardWidget()
         card.setTitle('宠物状态')
-        self._pet_name_label = BodyLabel('')
-        self._pet_name_label.setTextColor(QColor(96, 96, 96), QColor(170, 170, 170))
+        # 宠物名用与下方数值同级的加粗样式，字号再大一号更醒目
+        self._pet_name_label = StrongBodyLabel('')
+        font = self._pet_name_label.font()
+        font.setPointSizeF(font.pointSizeF() + 1)
+        self._pet_name_label.setFont(font)
         # headerLayout: [titleLabel, stretch...] -> 插到下标 1 = 紧跟标题，间隔 16px
         card.headerLayout.setSpacing(16)
         card.headerLayout.insertWidget(1, self._pet_name_label)
