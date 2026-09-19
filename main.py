@@ -1219,6 +1219,7 @@ class MainWindow(MSFluentWindow):
         # qfw 的 headerLayout 没有 stretch，QLabel 会平分多余宽度把后续元素挤到
         # 中间；尾部 addStretch(1) 让整排靠左紧跟标题
         card.headerLayout.setSpacing(6)
+        card.headerLayout.addSpacing(20)  # 标题「宠物状态」与第一组标注之间留空
         for index, (caption, attr) in enumerate(
                 (('账号名称', '_account_name_label'), ('宠物名称', '_pet_name_label'))):
             if index:
@@ -2681,9 +2682,17 @@ class MainWindow(MSFluentWindow):
         return True
 
     def _read_runner_logs(self, proc: subprocess.Popen) -> None:
-        """把调度器子进程的输出逐行送入日志队列。"""
+        """把调度器子进程的输出逐行送入日志队列。
+
+        顺手洗掉两类噪音：ANSI 颜色转义码（GUI 日志面板显示不出来，会留下一串
+        怪字符/看似空行的内容）；QFluentWidgets 库 import 时无条件打印的推广语。
+        """
+        ansi = re.compile(r'\x1b\[[0-9;]*m')
         for line in proc.stdout:
-            self._log_queue.put(line.rstrip())
+            text = ansi.sub('', line.rstrip())
+            if 'QFluentWidgets Pro is now released' in text:
+                continue  # 库自带的推广提示，与程序日志无关
+            self._log_queue.put(text)
         log('调度器已结束')
 
     # ---- 日志刷新 ----

@@ -44,12 +44,17 @@ ENTRY_MATCH_SCORE = 0.90            # 低于该分不认（福袋用的是 0.94�
 
 @lru_cache(maxsize=1)
 def _entry_template():
-    """企鹅帽参考图（np.fromfile 读是为了兼容中文路径）。"""
+    """企鹅帽参考图（np.fromfile 读是为了兼容中文路径）。资源缺失返回 None：
+    打包漏带时降级为只靠标签定位，不能让整个任务崩掉触发异常恢复。"""
     import cv2
     import numpy as np
 
-    data = np.fromfile(resource_path('resources/svip-entry.png'), dtype=np.uint8)
-    return cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
+    try:
+        data = np.fromfile(resource_path('resources/svip-entry.png'), dtype=np.uint8)
+        return cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
+    except OSError as e:
+        log(f'SVIP 入口模板图缺失（{e}），本次只用"点击有礼"标签定位')
+        return None
 
 
 def find_entry_icon(screen):
