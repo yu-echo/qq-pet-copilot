@@ -429,14 +429,56 @@ class FullRegression(unittest.TestCase):
         save.assert_not_called()
 
     def test_svip_disable_task_writes_config(self):
-        # _disable_task 把 tasks.svip.enabled=false 写回 config.yaml
+        # _disable_task 把 tasks.svip.enabled=false 写回 config.yaml，并打非会员标记
         from scenarios.svip import SvipScenario
         data = {'tasks': {'svip': {'enabled': True}}}
         with patch('src.settings.load_raw', return_value=data), \
-             patch('src.settings.save_raw') as save_raw:
+             patch('src.settings.save_raw') as save_raw, \
+             patch('scenarios.svip.set_svip_nonmember') as mark:
             SvipScenario._disable_task()
         save_raw.assert_called_once()
         self.assertFalse(data['tasks']['svip']['enabled'])
+        mark.assert_called_once_with(True)
+
+    def test_svip_probe_membership_states(self):
+        # 会员探测：明日再来/立即领取 -> True（顺手记领取进度）；开通 SVIP -> False
+        sc = self._svip_scenario({'svip_entry': (10, 20, 1),
+                                  'svip_dialog': (100, 200, 1),
+                                  'svip_tomorrow': (100, 300, 1)})
+        sc._open_and_read_state = Mock(return_value=('tomorrow', object()))
+        with patch('scenarios.svip.save_svip_claim') as save:
+            self.assertTrue(sc.probe_membership())
+        save.assert_called_once_with(True)
+        sc._open_and_read_state = Mock(return_value=('open', object()))
+        self.assertFalse(sc.probe_membership())
+        sc._open_and_read_state = Mock(return_value=(None, object()))
+        self.assertIsNone(sc.probe_membership())  # 识别不了不当成状态变化
+
+    def test_svip_recheck_reopens_task_for_member(self):
+        # 非会员自动关闭期间：每天探测一次，恢复会员 -> 自动写回 enabled=true
+        from datetime import datetime as dt, time as dtime
+        from scenarios.runner import TaskQueueRunner, _QueueTask
+        runner = TaskQueueRunner.__new__(TaskQueueRunner)
+        runner.svip = Mock()
+        runner.svip.probe_membership.return_value = True
+        runner._latest_daily_time = Mock(return_value=dtime(9, 5))
+        task = _QueueTask('svip')
+        task.cfg.enabled = False
+        data = {'tasks': {'svip': {'enabled': False}}}
+        with patch('scenarios.runner.svip_nonmember_flag', return_value=True), \
+             patch('src.settings.load_raw', return_value=data), \
+             patch('src.settings.save_raw') as save_raw:
+            runner._svip_nonmember_recheck({'svip': task})
+            # 同一天不重复探测
+            runner._svip_nonmember_recheck({'svip': task})
+        self.assertEqual(runner.svip.probe_membership.call_count, 1)
+        save_raw.assert_called_once()
+        self.assertTrue(data['tasks']['svip']['enabled'])
+        # 手动关闭（无非会员标记）：不探测
+        with patch('scenarios.runner.svip_nonmember_flag', return_value=False), \
+             patch('src.settings.save_raw') as save_raw2:
+            runner._svip_nonmember_recheck({'svip': task})
+        save_raw2.assert_not_called()
 
     def test_migrate_tasks_order_appends_new_keys(self):
         # 老配置 tasks.order 缺 svip：启动迁移自动追加到队尾；已有则不写盘

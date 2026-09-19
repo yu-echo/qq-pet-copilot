@@ -15,7 +15,12 @@ from __future__ import annotations
 
 import time
 
-from src.progress import log, save_svip_claim, svip_claimed_today
+from src.progress import (
+    log,
+    save_svip_claim,
+    set_svip_nonmember,
+    svip_claimed_today,
+)
 from src.scenario import CLICK_INTERVAL, DeviceScenario
 
 # 找入口/等弹窗的重试轮数（每轮间隔 CLICK_INTERVAL）
@@ -53,20 +58,8 @@ class SvipScenario(DeviceScenario):
     # ---- 主流程 ----
 
     def _claim_once(self) -> bool:
-        hit = self._find_entry()
-        if hit is None:
-            raise RuntimeError('主页未找到 SVIP 礼包入口（点击有礼）')
-        self.click(hit[0], hit[1])
-        screen = self._wait_dialog()
-        # 标题出了按钮区可能还在加载：轮询等按钮状态出现，避免误报"没识别到按钮"
-        state = None
-        for attempt in range(1, STATE_ATTEMPTS + 1):
-            state = self._dialog_state(screen)
-            if state is not None:
-                break
-            log(f'等待礼包弹窗按钮出现 ({attempt}/{STATE_ATTEMPTS})')
-            time.sleep(CLICK_INTERVAL)
-            screen = self.screen()
+        state, screen = self._open_and_read_state()
+
         if state == 'open':
             # 弹窗按钮区可能先渲染"开通 SVIP"模板再刷新成实际状态
             # （真机见过同一入口一次"开通 SVIP"、一次"明日再来"），复核一轮防误判，
@@ -104,6 +97,61 @@ class SvipScenario(DeviceScenario):
         return True
 
     # ---- 分步 ----
+
+    def _open_and_read_state(self):
+        """点入口 -> 等弹窗 -> 轮询读按钮状态（含"开通 SVIP"复核）。
+
+        返回 (state, screen)；state: 'claim'（立即领取）/'tomorrow'（明日再来）/
+        'open'（开通 SVIP）/None（没识别出来）。领不了就抛错交失败退避。
+        """
+        hit = self._find_entry()
+        if hit is None:
+            raise RuntimeError('主页未找到 SVIP 礼包入口（点击有礼）')
+        self.click(hit[0], hit[1])
+        screen = self._wait_dialog()
+        # 标题出了按钮区可能还在加载：轮询等按钮状态出现，避免误报"没识别到按钮"
+        state = None
+        for attempt in range(1, STATE_ATTEMPTS + 1):
+            state = self._dialog_state(screen)
+            if state is not None:
+                break
+            log(f'等待礼包弹窗按钮出现 ({attempt}/{STATE_ATTEMPTS})')
+            time.sleep(CLICK_INTERVAL)
+            screen = self.screen()
+        if state == 'open':
+            # 弹窗按钮区可能先渲染"开通 SVIP"模板再刷新成实际状态
+            # （真机见过同一入口一次"开通 SVIP"、一次"明日再来"），复核一轮防误判，
+            # 误判一次就会把任务误关。
+            time.sleep(OPEN_RECHECK_WAIT)
+            screen = self.screen()
+            state = self._dialog_state(screen)
+        return state, screen
+
+    def probe_membership(self) -> bool | None:
+        """会员状态探测（非会员自动关闭期间每日复查用）。
+
+        打开礼包弹窗看按钮：'claim'/'tomorrow' 都是会员 -> True（顺手把
+        "明日再来"记成当天已领取）；复核后仍是 'open' -> False；识别不了
+        -> None（不当成状态变化，明天再试）。
+        """
+        self.ensure_main_page()
+        try:
+            state, screen = self._open_and_read_state()
+        except Exception:
+            self.ensure_main_page()  # 弹窗可能没开成功，尽量回主页再抛
+            raise
+        try:
+            if state in ('claim', 'tomorrow'):
+                if state == 'tomorrow':
+                    save_svip_claim(True)
+                return True
+            if state == 'open':
+                return False
+            return None
+        finally:
+            if state is not None:
+                self._close_dialog(screen)
+            self.ensure_main_page()
 
     def _dialog_state(self, screen) -> str | None:
         """识别弹窗当前按钮状态：'claim'（立即领取）/ 'tomorrow'（明日再来）/
@@ -162,8 +210,9 @@ class SvipScenario(DeviceScenario):
             data = load_raw()
             set_value(data, 'tasks.svip.enabled', False)
             save_raw(data)
+            set_svip_nonmember(True)  # 打"非会员自动关闭"标记：调度器每日复查会员状态
             log('已把 tasks.svip.enabled=false 写回 config.yaml'
-                '（非会员不再调度该任务；之后开通了会员，在任务表把 SVIP礼包 '
-                '开关重新打开即可）')
+                '（非会员不再调度该任务；关闭期间每天自动复查一次会员状态，'
+                '恢复了会自动重新开启；也可手动在任务表把开关打开）')
         except Exception as e:  # noqa: BLE001 - 写配置失败不阻断本次流程
             log(f'写回 config.yaml 失败（{e}），请手动把 SVIP礼包 任务开关关闭')

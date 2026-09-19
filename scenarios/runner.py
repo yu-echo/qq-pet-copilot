@@ -91,6 +91,7 @@ from src.progress import (
     load_progress,
     log,
     svip_claimed_today,
+    svip_nonmember_flag,
 )
 from src.queue_status import save_queue_status
 from src.recover import reenter_pet
@@ -945,6 +946,8 @@ class TaskQueueRunner(Runner):
                 # 热修改：每轮调度前重读配置（含 tasks.order 与各任务调度设置）
                 self.reload_config()
                 self._apply_tasks_config(tasks, order)
+                # 非会员自动关闭期间：每天过点后探测一次会员状态，恢复会员自动重开
+                self._svip_nonmember_recheck(tasks)
                 # 跨天（进度按天持久化、第二天清零）：清除各任务"当天不可继续"标记
                 self._rollover_dead_flags(tasks)
                 executed = self._run_first_due(tasks, order)
@@ -1176,6 +1179,39 @@ class TaskQueueRunner(Runner):
             elif key == 'work':
                 return 'work'  # 兜底：打工当天可继续就可执行
         return None
+
+    def _svip_nonmember_recheck(self, tasks: dict) -> None:
+        """非会员自动关闭期间的每日复查：探测会员状态，恢复会员就自动重开任务。
+
+        只在 tasks.svip 存在、开关是关、且带"非会员自动关闭"标记时探测；
+        每天最多一次，且过了当天的 svip 每日时间点才做（与正常执行同节奏）。
+        手动关开关（无标记）不会触发探测，尊重用户的选择。
+        """
+        task = tasks.get('svip')
+        if task is None or task.cfg.enabled or not svip_nonmember_flag():
+            return
+        now = datetime.now()
+        if getattr(self, '_svip_recheck_date', None) == now.date():
+            return  # 今天已复查过
+        if self._latest_daily_time(task.cfg.daily_times, now) is None:
+            return  # 还没到今天的 svip 时间点
+        self._svip_recheck_date = now.date()
+        log('SVIP礼包: 处于非会员自动关闭状态，探测一次会员状态...')
+        try:
+            member = self.svip.probe_membership()
+        except Exception as e:
+            log(f'SVIP 会员状态探测失败: {e}，明天再试')
+            return
+        if member:
+            from src.settings import load_raw, save_raw, set_value
+            data = load_raw()
+            set_value(data, 'tasks.svip.enabled', True)
+            save_raw(data)
+            log('复查结果: 当前账号已是 SVIP 会员，已自动重新开启 SVIP礼包 任务')
+        elif member is False:
+            log('复查结果: 仍未开通 SVIP 会员，继续保持任务关闭')
+        else:
+            log('复查结果: 未能识别礼包弹窗，明天再试')
 
     def _task_due(self, key: str, tasks: dict, ctx: dict) -> bool:
         """任务自身的执行条件（配额/场景时间窗/主任务组统一判定），在 _eligible 之后判定。"""

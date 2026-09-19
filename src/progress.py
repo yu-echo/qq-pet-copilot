@@ -145,6 +145,19 @@ def svip_claimed_today() -> bool:
     return done
 
 
+def set_svip_nonmember(flag: bool) -> None:
+    """记录"任务因非会员被自动关闭"标记（供调度器每日复查会员是否恢复）。"""
+    data = progress_store.read_raw(SVIP_PROGRESS_FILE)
+    data['non_member'] = bool(flag)
+    data['marked_at'] = time.strftime('%Y-%m-%d %H:%M:%S') if flag else ''
+    progress_store.write_raw(SVIP_PROGRESS_FILE, data)
+
+
+def svip_nonmember_flag() -> bool:
+    """当前是否处于"非会员自动关闭"状态（关闭期间调度器每日探测一次）。"""
+    return bool(progress_store.read_raw(SVIP_PROGRESS_FILE).get('non_member'))
+
+
 # ---- 成长福袋累计金币（跨天累计；换账号/配置变更后清零重计） ----
 
 MONEYBAG_STATS_FILE = PROJECT_ROOT / 'runs' / 'moneybag_stats.json'
