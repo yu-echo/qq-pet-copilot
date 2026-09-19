@@ -121,6 +121,10 @@ EMBED_TRIES = 40  # 查找 scrcpy 窗口的次数（每次 500ms）
 LOG_MAX_LINES = 5000  # 日志区显示行数上限（超出自动丢弃最旧的行；完整日志在 runs/logs/ 文件里）
 SCRCPY_WATCHDOG_MS = 5000    # scrcpy 看门狗轮询间隔（毫秒）
 SCRCPY_RETRY_INTERVAL = 15.0  # 重拉失败后的退避（秒；设备重启要几十秒，别刷日志）
+# 后台节流确认次数：连续这么多次都判定为后台才真正暂停镜像（约 15 秒）。
+# 焦点切换、拉起子进程、锁屏/通知抢焦点的瞬间 GetForegroundWindow 会短时返回
+# 别的窗口，一次误判就把镜像窗口收起来，来回切换时观感很跳。
+SCRCPY_THROTTLE_TICKS = 3
 UPDATE_CHECK_INTERVAL_MS = 6 * 3600 * 1000  # 检查更新周期（启动后先自动查一次）
 
 # Windows 下隐藏子进程的命令行窗口（scrcpy/taskkill 等都是控制台程序）
@@ -630,6 +634,33 @@ class ScrcpyContainer(QWidget):
         self._hwnd = hwnd
         self._last_geometry = None
 
+    def unembed(self) -> int | None:
+        """把嵌入的 scrcpy 窗口脱离容器并移到屏幕外隐藏，**不杀进程**。
+
+        前后台切换时只动窗口嵌入状态、不重启 scrcpy：镜像进程常驻（--turn-screen-off
+        只在连接建立时执行一次，常驻就一直关屏），切回来时再嵌回去。这样切换时
+        没有进程退出，屏幕不会被恢复点亮又关掉——真正消掉闪屏。返回 hwnd（嵌入过才有）。
+        """
+        hwnd = self._hwnd
+        if not hwnd:
+            return None
+        try:
+            win32gui.SetParent(hwnd, 0)  # 脱离嵌入容器，变回顶层窗口
+            style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+            win32gui.SetWindowLong(
+                hwnd, win32con.GWL_STYLE,
+                (style & ~win32con.WS_CHILD) | win32con.WS_POPUP,
+            )
+            win32gui.SetWindowPos(
+                hwnd, None, -2000, -2000, 0, 0,
+                win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED,
+            )
+        except Exception:
+            pass
+        self._hwnd = None
+        self._last_geometry = None
+        return hwnd
+
     def embed(self, hwnd: int, aspect: tuple[int, int] | None = None) -> None:
         self.set_hwnd(hwnd)
         win32gui.SetParent(hwnd, int(self.winId()))
@@ -844,6 +875,7 @@ class MainWindow(MSFluentWindow):
 
         self._scrcpy_proc: subprocess.Popen | None = None
         self._background_mirror_paused = False
+        self._bg_ticks = 0  # 连续判定为后台的看门狗轮数（达到阈值才真正暂停）
         self._runner_proc: subprocess.Popen | None = None
         self._runner_started_at: float | None = None  # 调度器启动时刻（monotonic），主页显示运行时间用
         self._recovering = False  # 手动重启进行中：期间开始/停止按钮联动禁用
@@ -1311,11 +1343,17 @@ class MainWindow(MSFluentWindow):
         if not self.btn_scrcpy.isChecked():
             return  # 画面镜像已关闭，不自动拉起
         if not window_is_foreground(self) or self.isMinimized():
-            if not self._background_mirror_paused:
+            self._bg_ticks += 1
+            # 必须连续 SCRCPY_THROTTLE_TICKS 轮都判定后台才真正暂停：单次误判
+            # （焦点过渡、抢焦点窗口）就停一次镜像 = 手机屏幕闪一下。
+            if (not self._background_mirror_paused
+                    and self._bg_ticks >= SCRCPY_THROTTLE_TICKS):
                 self._background_mirror_paused = True
                 self._disable_scrcpy()
             return
+        self._bg_ticks = 0
         if self._background_mirror_paused:
+            # 回到前台立即恢复，不需要防抖（防抖只用在"暂停"方向）。
             self._background_mirror_paused = False
             self._enable_scrcpy()
             return
@@ -2438,12 +2476,34 @@ class MainWindow(MSFluentWindow):
             log('开启 scrcpy...')
             self._enable_scrcpy()
         else:
-            self._disable_scrcpy()
+            self._disable_scrcpy(permanent=True)  # 手动关镜像开关：彻底杀镜像+无头关屏
 
     def _enable_scrcpy(self) -> None:
-        """启动 scrcpy 并开始查找嵌入（看门狗随后自动维护重连）。"""
+        """启动/恢复 scrcpy 镜像并嵌入。
+
+        镜像 scrcpy 常驻不杀：前后台切换时只是把嵌入窗口藏起来/嵌回来，
+        没有进程重启，屏幕状态完全不变，切回来零闪屏。镜像真没在跑时才重新拉起。
+        """
         if self._background_mirror_paused:
             return
+        mirror_live = (self._scrcpy_proc is not None
+                       and self._scrcpy_proc.poll() is None)
+        if not mirror_live:
+            self.scrcpy_view.set_hwnd(None)
+            self._scrcpy_proc = start_scrcpy()
+            if self._scrcpy_proc:
+                self._embed_tries = 0
+                self._embed_fail_logged = False
+                self._embed_timer.start(500)
+            else:
+                # 镜像没拉起来：保留无头关屏进程（若它在跑），别把屏幕放亮
+                return
+        elif self.scrcpy_view._hwnd is None:
+            # 镜像在跑但没嵌上：补挂嵌入轮询把它嵌回来
+            if not self._embed_timer.isActive():
+                self._embed_tries = 0
+                self._embed_timer.start(500)
+        # 镜像常驻，无头关屏进程不再需要（镜像本身就在按灭屏幕）
         if self._screen_off_proc is not None and self._screen_off_proc.poll() is None:
             log('结束屏幕关闭 scrcpy')
             self._screen_off_proc.terminate()
@@ -2453,26 +2513,24 @@ class MainWindow(MSFluentWindow):
                 self._screen_off_proc.kill()
                 self._screen_off_proc.wait(timeout=2)
         self._screen_off_proc = None
-        if self._scrcpy_proc is not None and self._scrcpy_proc.poll() is None:
-            # 已在运行：若之前嵌入超时没嵌上（窗口落在屏幕外），补挂嵌入轮询而不是干等
-            if self.scrcpy_view._hwnd is None and not self._embed_timer.isActive():
-                self._embed_tries = 0
-                self._embed_timer.start(500)
+
+    def _disable_scrcpy(self, permanent: bool = False) -> None:
+        """切后台/关镜像。
+
+        permanent=False（切后台）：镜像 scrcpy **常驻**，只把嵌入窗口藏起来，
+            不杀进程、不动屏幕。scrcpy 被杀时 --turn-screen-off 会失效、屏幕被
+            恢复点亮，这才是闪屏根因。常驻后切换时屏幕状态不变。
+        permanent=True（关镜像开关）：彻底杀掉镜像进程，并用无头关屏 scrcpy
+            把设备屏幕真正按灭（保持自动化可用）。
+        """
+        self._embed_timer.stop()
+        if not permanent:
+            self.scrcpy_view.unembed()  # 脱离嵌入藏到屏幕外，镜像进程继续跑
             return
         self.scrcpy_view.set_hwnd(None)
-        self._scrcpy_proc = start_scrcpy()
-        if self._scrcpy_proc:
-            self._embed_tries = 0
-            self._embed_fail_logged = False
-            self._embed_timer.start(500)
-
-    def _disable_scrcpy(self) -> None:
-        """结束 scrcpy 并停止嵌入/看门狗维护（开关关闭状态）。"""
-        self._embed_timer.stop()
         kill_our_scrcpy(self._scrcpy_proc)
         self._scrcpy_proc = None
-        self.scrcpy_view.set_hwnd(None)
-        # 镜像关闭：用无头 scrcpy 真正关掉设备屏幕（保持自动化可用）；
+        # 镜像被完全关闭：用无头 scrcpy 真正关掉设备屏幕（保持自动化可用）；
         if self._screen_off_proc is None or self._screen_off_proc.poll() is not None:
             self._screen_off_proc = start_scrcpy_screen_off()
 

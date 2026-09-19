@@ -128,9 +128,14 @@ class FullRegression(unittest.TestCase):
         import main
         window=NS(btn_scrcpy=Mock(), isActiveWindow=Mock(return_value=False),
                   isMinimized=Mock(return_value=False), _background_mirror_paused=False,
+                  _bg_ticks=0,
                   _disable_scrcpy=Mock(), _enable_scrcpy=Mock())
         window.btn_scrcpy.isChecked.return_value=True
-        main.MainWindow._check_scrcpy(window)
+        # 防抖：单次或不足 SCRCPY_THROTTLE_TICKS 轮的"后台"判定不触发暂停，
+        # 只有连续 SCRCPY_THROTTLE_TICKS 轮都判后台才真正暂停一次。
+        for _ in range(main.SCRCPY_THROTTLE_TICKS - 1):
+            main.MainWindow._check_scrcpy(window)
+        window._disable_scrcpy.assert_not_called()
         main.MainWindow._check_scrcpy(window)
         window._disable_scrcpy.assert_called_once()
         window._enable_scrcpy.assert_not_called()
@@ -146,6 +151,51 @@ class FullRegression(unittest.TestCase):
         window.btn_scrcpy.isChecked.return_value=False
         main.MainWindow._check_scrcpy(window)
         window._enable_scrcpy.assert_not_called()
+
+    def test_disable_scrcpy_hands_off_before_killing_mirror(self):
+        import main
+        # 切后台（permanent=False）：镜像常驻不杀、只藏窗口，不启动无头关屏。
+        # scrcpy 被杀才是闪屏根因；常驻后切换时屏幕状态不变。
+        window = NS(_screen_off_proc=None,
+                    _scrcpy_proc=Mock(),
+                    _embed_timer=Mock(),
+                    scrcpy_view=Mock())
+        with patch('main.start_scrcpy_screen_off') as ss_off, \
+             patch('main.kill_our_scrcpy') as kill:
+            main.MainWindow._disable_scrcpy(window, permanent=False)
+        ss_off.assert_not_called()
+        kill.assert_not_called()
+        window.scrcpy_view.unembed.assert_called_once()
+        # 手动关镜像开关（permanent=True）：杀镜像 + 启用无头关屏。
+        screen_off = Mock(); screen_off.poll.return_value = None
+        window2 = NS(_screen_off_proc=None,
+                     _scrcpy_proc=Mock(),
+                     _embed_timer=Mock(),
+                     scrcpy_view=Mock())
+        with patch('main.start_scrcpy_screen_off', return_value=screen_off) as ss_off, \
+             patch('main.kill_our_scrcpy') as kill, \
+             patch('main.time.sleep') as _sleep:
+            main.MainWindow._disable_scrcpy(window2, permanent=True)
+        ss_off.assert_called_once()
+        kill.assert_called_once()
+        self.assertIs(window2._screen_off_proc, screen_off)
+
+    def test_enable_scrcpy_keeps_screen_off_if_mirror_fails(self):
+        import main
+        # 镜像没拉起来时不能把无头关屏进程收掉，否则屏幕被放亮。
+        screen_off = Mock(); screen_off.poll.return_value = None
+        window = NS(_background_mirror_paused=False,
+                    _scrcpy_proc=None,
+                    _screen_off_proc=screen_off,
+                    _embed_tries=0, _embed_fail_logged=False,
+                    _embed_timer=Mock(),
+                    scrcpy_view=Mock())
+        with patch('main.start_scrcpy', return_value=None) as ss, \
+             patch('main.time.sleep') as _sleep:
+            main.MainWindow._enable_scrcpy(window)
+        ss.assert_called_once()
+        screen_off.terminate.assert_not_called()
+        self.assertIs(window._screen_off_proc, screen_off)
 
     def test_background_skips_stats_file_reads(self):
         import main
