@@ -1208,9 +1208,15 @@ class MainWindow(MSFluentWindow):
         return super().nativeEvent(eventType, message)
 
     def _build_status_card(self) -> HeaderCardWidget:
-        """宠物状态卡片：体力/清洁/心情/金币/饼干/香皂 横排一行均匀分布。"""
+        """宠物状态卡片：体力/清洁/心情/金币/饼干/香皂 横排一行均匀分布。
+
+        标题动态带宠物名（护理 OCR 写进状态缓存的 pet_name，见 _refresh_stats），
+        检测不到名字时只显示"宠物状态"。
+        """
         card = CompactCardWidget()
         card.setTitle('宠物状态')
+        self._status_card = card
+        self._status_title_name = ''  # 当前标题里的宠物名（去重，避免每秒重设）
         body = QWidget()
         layout = QHBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1480,8 +1486,14 @@ class MainWindow(MSFluentWindow):
                 for key, _label in STATUS_FIELDS:
                     self._status_values[key].setText(str(st.get(key, '-')))
             else:
+                st = {}
                 for key, _label in STATUS_FIELDS:
                     self._status_values[key].setText('-')
+            # 宠物状态卡片标题带上宠物名（护理 OCR 识别的 pet_name），没有就不显示
+            name = str(st.get('pet_name') or '').strip()
+            if name != self._status_title_name:
+                self._status_title_name = name
+                self._status_card.setTitle(f'宠物状态  {name}' if name else '宠物状态')
         except Exception as e:
             self._queue_values['current'].setText(f'状态读取失败: {e}')
         try:
