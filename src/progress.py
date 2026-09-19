@@ -158,6 +158,38 @@ def svip_nonmember_flag() -> bool:
     return bool(progress_store.read_raw(SVIP_PROGRESS_FILE).get('non_member'))
 
 
+def reset_daily_progress_for_pet(pet_name: str) -> list[str]:
+    """换宠物/账号（OCR 识别的宠物名变化）后清空所有每日任务进度。
+
+    保留历史记录，仅当天计数清零；经验日常/SVIP 领取状态一并重置。
+    返回有计数被清掉的任务名（供日志说明）。
+    """
+    today = date.today().isoformat()
+    reset: list[str] = []
+    for name, file in (('学习', SCHOOL_PROGRESS_FILE),
+                       ('打工', WORK_PROGRESS_FILE),
+                       ('冒险', ADVENTURE_PROGRESS_FILE),
+                       ('被雇佣', EMPLOYED_PROGRESS_FILE),
+                       ('踩踩', VISIT_PROGRESS_FILE),
+                       ('PK', PK_PROGRESS_FILE),
+                       ('雇佣好友', HIRE_FRIEND_PROGRESS_FILE)):
+        _, done, history = progress_store.load_daily(file)
+        if done:
+            progress_store.save_daily(file, today, 0, history)
+            reset.append(name)
+    _, exp_done, exp_history = load_exp_daily(quiet=True)
+    if exp_done:
+        save_exp_daily(False, today, exp_history)
+        reset.append('经验日常')
+    _, svip_done, svip_history = load_svip_claim(quiet=True)
+    if svip_done:
+        save_svip_claim(False, today, svip_history)
+        reset.append('SVIP礼包')
+    if reset:
+        log(f'宠物名变为 {pet_name}，已重置每日任务进度: {"/".join(reset)}')
+    return reset
+
+
 # ---- 成长福袋累计金币（跨天累计；换账号/配置变更后清零重计） ----
 
 MONEYBAG_STATS_FILE = PROJECT_ROOT / 'runs' / 'moneybag_stats.json'

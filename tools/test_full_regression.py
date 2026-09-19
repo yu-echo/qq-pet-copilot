@@ -521,6 +521,42 @@ class FullRegression(unittest.TestCase):
             sc.wait_employed_back(check_interval=0.01)
         sc._recall_employed.assert_called_once()
 
+    def test_reset_daily_progress_for_pet(self):
+        # 换宠物：当天计数清零、历史保留；没有计数时不产生重复重置项
+        import src.progress as prog
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            files = {n: p / f'{n}.json' for n in
+                     ('school', 'work', 'adventure', 'employed',
+                      'visit', 'pk', 'hire_friend', 'exp', 'svip')}
+            consts = {'SCHOOL_PROGRESS_FILE': files['school'],
+                      'WORK_PROGRESS_FILE': files['work'],
+                      'ADVENTURE_PROGRESS_FILE': files['adventure'],
+                      'EMPLOYED_PROGRESS_FILE': files['employed'],
+                      'VISIT_PROGRESS_FILE': files['visit'],
+                      'PK_PROGRESS_FILE': files['pk'],
+                      'HIRE_FRIEND_PROGRESS_FILE': files['hire_friend'],
+                      'EXP_DAILY_PROGRESS_FILE': files['exp'],
+                      'SVIP_PROGRESS_FILE': files['svip']}
+            with patch.multiple(prog, **consts):
+                prog.save_progress(files['school'], '2026-09-19', 3, {'2026-09-18': 2})
+                prog.save_progress(files['visit'], '2026-09-19', 10, {})
+                prog.save_exp_daily(True, '2026-09-19', {})
+                prog.save_svip_claim(True, '2026-09-19', {})
+                reset = prog.reset_daily_progress_for_pet('咕咕嘎嘎')
+                self.assertIn('学习', reset)
+                self.assertIn('踩踩', reset)
+                self.assertIn('经验日常', reset)
+                self.assertIn('SVIP礼包', reset)
+                today, done, history = prog.load_progress(files['school'], quiet=True)
+                self.assertEqual(done, 0)
+                self.assertEqual(history.get('2026-09-18'), 2)  # 历史保留
+                self.assertEqual(prog.load_progress(files['visit'], quiet=True)[1], 0)
+                _, exp_done, _ = prog.load_exp_daily(quiet=True)
+                self.assertFalse(exp_done)
+                # 第二次调用：已无计数，不再列出
+                self.assertEqual(prog.reset_daily_progress_for_pet('咕咕嘎嘎'), [])
+
     def test_pk_round_cap(self):
         self.assertEqual(PKScenario._round_limit(15,14),15)
         self.assertEqual(PKScenario._round_limit(0,4),4+PK_ROUND_CAP)

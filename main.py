@@ -1221,9 +1221,11 @@ class MainWindow(MSFluentWindow):
         font = self._pet_name_label.font()
         font.setPointSizeF(font.pointSizeF() + 1)
         self._pet_name_label.setFont(font)
-        # headerLayout: [titleLabel, stretch...] -> 插到下标 1 = 紧跟标题，间隔 16px
+        # qfw 的 headerLayout 没有 stretch，QLabel 会平分多余宽度把名字挤到中间；
+        # 尾部加 stretch 让「宠物状态 名字」都靠左紧跟（间隔 16px）
         card.headerLayout.setSpacing(16)
-        card.headerLayout.insertWidget(1, self._pet_name_label)
+        card.headerLayout.addWidget(self._pet_name_label)
+        card.headerLayout.addStretch(1)
         self._status_card = card
         self._status_title_name = ''  # 当前显示的宠物名（去重，避免每秒重设）
         body = QWidget()
@@ -1277,6 +1279,11 @@ class MainWindow(MSFluentWindow):
         """
         card = CompactCardWidget()
         card.setTitle('今日统计')
+        # 标题右侧显示宠物名（换宠物会重置这些当日计数，标注一下当前是谁的统计）
+        self._today_name_label = StrongBodyLabel('')
+        card.headerLayout.setSpacing(16)
+        card.headerLayout.addWidget(self._today_name_label)
+        card.headerLayout.addStretch(1)
         body = QWidget()
         grid = QGridLayout(body)
         grid.setContentsMargins(0, 0, 0, 0)
@@ -1510,6 +1517,7 @@ class MainWindow(MSFluentWindow):
             if name != self._status_title_name:
                 self._status_title_name = name
                 self._pet_name_label.setText(name)
+                self._today_name_label.setText(name)
         except Exception as e:
             self._queue_values['current'].setText(f'状态读取失败: {e}')
         try:
