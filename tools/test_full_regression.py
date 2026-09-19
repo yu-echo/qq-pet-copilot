@@ -314,6 +314,95 @@ class FullRegression(unittest.TestCase):
                 self.assertEqual(sc.step_once(),'already' if done else 'stepped')
             self.assertEqual(sc.click.call_count,int(not done))
 
+    # ---- SVIP 礼包（每日领取；非会员自动关任务） ----
+
+    @staticmethod
+    def _svip_scenario(states):
+        """构造裸 SvipScenario：see 按 states 字典应答，设备交互全部 Mock。"""
+        from scenarios.svip import SvipScenario
+        sc = SvipScenario.__new__(SvipScenario)
+        sc.click = Mock()
+        sc.screen = Mock(return_value=object())
+        sc.see = lambda key, *a, **kw: states.get(key)
+        sc.ensure_main_page = Mock()
+        sc._close_dialog = Mock()
+        return sc
+
+    def test_svip_claim_success(self):
+        # 会员且今日未领：点"立即领取" -> 记进度 -> 返回 True
+        sc = self._svip_scenario({'svip_entry': (10, 20, 1),
+                                  'svip_dialog': (100, 200, 1),
+                                  'svip_claim': (100, 300, 1)})
+        with patch('scenarios.svip.time.sleep'), \
+             patch('scenarios.svip.svip_claimed_today', return_value=False), \
+             patch('scenarios.svip.save_svip_claim') as save:
+            self.assertTrue(sc.run())
+        save.assert_called_once_with(True)
+        self.assertGreaterEqual(sc.click.call_count, 2)  # 入口 + 领取按钮
+        sc.ensure_main_page.assert_called()
+
+    def test_svip_already_claimed_today_skips(self):
+        # 进度文件已标记今天领取：直接跳过，不碰设备
+        from scenarios.svip import SvipScenario
+        sc = SvipScenario.__new__(SvipScenario)
+        sc.ensure_main_page = Mock()
+        with patch('scenarios.svip.svip_claimed_today', return_value=True), \
+             patch('scenarios.svip.save_svip_claim') as save:
+            self.assertFalse(sc.run())
+        save.assert_not_called()
+        sc.ensure_main_page.assert_not_called()
+
+    def test_svip_tomorrow_dialog_marks_done(self):
+        # 弹窗按钮是"明日再来"：说明今天已领过，记进度并返回 False
+        sc = self._svip_scenario({'svip_entry': (10, 20, 1),
+                                  'svip_dialog': (100, 200, 1),
+                                  'svip_tomorrow': (100, 300, 1)})
+        with patch('scenarios.svip.time.sleep'), \
+             patch('scenarios.svip.svip_claimed_today', return_value=False), \
+             patch('scenarios.svip.save_svip_claim') as save:
+            self.assertFalse(sc.run())
+        save.assert_called_once_with(True)
+        sc.click.assert_called_once()  # 只点了入口，没点领取
+
+    def test_svip_non_member_disables_task(self):
+        # 非会员：弹窗按钮是"开通 SVIP" -> 自动关闭任务并返回 False，不记领取进度
+        sc = self._svip_scenario({'svip_entry': (10, 20, 1),
+                                  'svip_dialog': (100, 200, 1),
+                                  'svip_open': (100, 300, 1)})
+        with patch('scenarios.svip.time.sleep'), \
+             patch('scenarios.svip.svip_claimed_today', return_value=False), \
+             patch('scenarios.svip.save_svip_claim') as save, \
+             patch('scenarios.svip.SvipScenario._disable_task') as disable:
+            self.assertFalse(sc.run())
+        disable.assert_called_once()
+        save.assert_not_called()
+
+    def test_svip_disable_task_writes_config(self):
+        # _disable_task 把 tasks.svip.enabled=false 写回 config.yaml
+        from scenarios.svip import SvipScenario
+        data = {'tasks': {'svip': {'enabled': True}}}
+        with patch('src.settings.load_raw', return_value=data), \
+             patch('src.settings.save_raw') as save_raw:
+            SvipScenario._disable_task()
+        save_raw.assert_called_once()
+        self.assertFalse(data['tasks']['svip']['enabled'])
+
+    def test_migrate_tasks_order_appends_new_keys(self):
+        # 老配置 tasks.order 缺 svip：启动迁移自动追加到队尾；已有则不写盘
+        from src import settings as settings_mod
+        data = {'tasks': {'order': 'care>work'}}
+        with patch.object(settings_mod, 'load_raw', return_value=data), \
+             patch.object(settings_mod, 'save_raw') as save_raw:
+            settings_mod.migrate_tasks_order()
+        save_raw.assert_called_once()
+        self.assertEqual(data['tasks']['order'], 'care>work>svip')
+        data2 = {'tasks': {'order': 'care>svip>work'}}
+        with patch.object(settings_mod, 'load_raw', return_value=data2), \
+             patch.object(settings_mod, 'save_raw') as save_raw2:
+            settings_mod.migrate_tasks_order()
+        save_raw2.assert_not_called()
+
+
     def test_pk_round_cap(self):
         self.assertEqual(PKScenario._round_limit(15,14),15)
         self.assertEqual(PKScenario._round_limit(0,4),4+PK_ROUND_CAP)
@@ -356,7 +445,7 @@ class FullRegression(unittest.TestCase):
     def test_all_queue_task_gates(self):
         runner=TaskQueueRunner.__new__(TaskQueueRunner)
         now=datetime(2026,9,8,12)
-        for key in ('care','school','work','adventure','visit','pk','friend_care','hire_friend'):
+        for key in ('care','school','work','adventure','visit','pk','friend_care','hire_friend','svip'):
             task=_QueueTask(key)
             with self.subTest(task=key):
                 self.assertTrue(runner._eligible(task,now))

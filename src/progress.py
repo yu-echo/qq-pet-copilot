@@ -22,6 +22,7 @@ VISIT_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'visit_progress.json'
 PK_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'pk_progress.json'
 HIRE_FRIEND_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'hire_friend_progress.json'
 EXP_DAILY_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'exp_daily_progress.json'
+SVIP_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'svip_progress.json'
 
 
 def log(msg: str) -> None:
@@ -120,6 +121,28 @@ def log_exp_daily() -> None:
         line += '（历史: ' + '，'.join(f'{d} ' + ('完成' if v else '未完成')
                                       for d, v in past.items()) + '）'
     log(line)
+
+
+# ---- 每日领取 QQ SVIP 会员礼包（布尔位：当天是否已领取） ----
+
+
+def load_svip_claim(quiet: bool = False) -> tuple[str, bool, dict]:
+    """读取 SVIP 礼包进度，返回 (今天日期, 当日是否已领取, 历史记录 {日期: 是否领取})。"""
+    today, done, history = progress_store.load_exp_daily(SVIP_PROGRESS_FILE)
+    if not quiet:
+        log('SVIP礼包: ' + ('今天已领取' if done else '今天未领取'))
+    return today, done, history
+
+
+def save_svip_claim(done: bool, today: str | None = None, history: dict | None = None) -> None:
+    """持久化当天 SVIP 礼包是否已领取（跨天由 progress_store 规整，隔天自动失效）。"""
+    progress_store.save_exp_daily(SVIP_PROGRESS_FILE, done, today, history)
+
+
+def svip_claimed_today() -> bool:
+    """今天 SVIP 礼包是否已领取（供调度判断当天是否还需要执行）。"""
+    _, done, _ = load_svip_claim(quiet=True)
+    return done
 
 
 # 活动类型 -> (进度文件, 中文量词, 计数名)，用于出门时等完别的活动后的交叉计数

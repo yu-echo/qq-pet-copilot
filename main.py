@@ -100,6 +100,7 @@ from src.progress import (
     load_durations,
     load_exp_daily,
     load_progress,
+    load_svip_claim,
     log,
 )
 from src.stats_chart import StatsPanel
@@ -386,7 +387,7 @@ TASK_SETTING_FIELDS = [
 # 调度选项卡的任务显示名（任务键定义在 src/config.py 的 TASK_KEYS）
 SCHEDULE_TASK_NAMES = {'care': '护理', 'adventure': '冒险', 'visit': '踩踩', 'pk': 'PK',
                        'hire_friend': '雇佣好友', 'friend_care': '好友护理',
-                       'school': '学习', 'work': '打工'}
+                       'school': '学习', 'work': '打工', 'svip': 'SVIP礼包'}
 
 # 设置/任务表单的分组卡片标题：按配置键第一段分组（顺序按字段首次出现）
 SETTING_GROUP_TITLES = {
@@ -1591,6 +1592,8 @@ class MainWindow(MSFluentWindow):
             item = getattr(cfg.tasks, key)
             if key in ('adventure', 'visit', 'pk'):
                 interval_v = getattr(cfg, key).start_time
+            elif key == 'svip':
+                interval_v = tuple(item.daily_times)  # 每日领取时间（只存队列 daily_times）
             elif key in ('care', 'hire_friend', 'friend_care'):
                 interval_v = getattr(cfg, key).interval_seconds
             else:
@@ -1652,6 +1655,16 @@ class MainWindow(MSFluentWindow):
         return self._centered(cb)
 
     def _make_interval_editor(self, key: str, item, cfg, in_order: bool) -> QWidget:
+        if key == 'svip':
+            # 每日领取时间（HH:MM）：该任务没有场景级 start_time，只存队列 daily_times
+            te = _NoWheelTimeEdit()
+            te.setDisplayFormat('HH:mm')
+            times = list(item.daily_times) or ['09:05']
+            te.setTime(self._qtime_from_value(times[0]))
+            te.setEnabled(in_order)
+            te.setToolTip('每日领取时间（HH:MM），每天到点执行一次')
+            te.timeChanged.connect(lambda qt, k=key: self._save_schedule_daily_time(k, qt))
+            return ClickToEdit(te)
         if key in ('adventure', 'visit', 'pk'):
             # 每日调度时间（HH:MM）：场景 start_time，保存时同步队列 daily_times
             te = _NoWheelTimeEdit()
@@ -1745,6 +1758,12 @@ class MainWindow(MSFluentWindow):
         quoted = DoubleQuotedScalarString(value)
         self._save_schedule_values({f'{key}.start_time': quoted,
                                     f'tasks.{key}.daily_times': [quoted]})
+
+    def _save_schedule_daily_time(self, key: str, qtime: 'QTime') -> None:
+        """保存每日领取时间（SVIP礼包这类只有队列 daily_times 的每日任务）。"""
+        value = qtime.toString('HH:mm')
+        quoted = DoubleQuotedScalarString(value)
+        self._save_schedule_values({f'tasks.{key}.daily_times': [quoted]})
 
     def _save_schedule_range(self, key: str, text: str) -> None:
         """保存启用时段：好友护理/雇佣好友同时写场景 time_range 与队列
@@ -1857,6 +1876,27 @@ class MainWindow(MSFluentWindow):
             return self._fmt_next_dt(nxt, now)
         if key in ('school', 'work'):
             return '启动后判定'
+        if key == 'svip':
+            times = [self._clock_to_time(str(t)) for t in (item.daily_times or [])]
+            times = [t for t in times if t is not None]
+            if not times:
+                return '—'
+            _, claimed, _ = load_svip_claim(quiet=True)
+            if claimed:
+                # 今天已领取：显示下一次领取时间（今天未到的最近时间点/明天的）
+                nxt = None
+                for t in times:
+                    dt = datetime.combine(now.date(), t)
+                    if dt <= now:
+                        dt += timedelta(days=1)
+                    if nxt is None or dt < nxt:
+                        nxt = dt
+                return self._fmt_next_dt(nxt, now)
+            for t in times:  # 未领取：今天还有没到的时间点就等它，已过即可执行
+                dt = datetime.combine(now.date(), t)
+                if dt > now:
+                    return self._fmt_next_dt(dt, now)
+            return '现在可执行'
         return '—'
 
     def _next_exec_text(self, key: str, item, cfg, state: dict, running: bool,
@@ -2721,6 +2761,9 @@ def main() -> None:
     from src.gui_diagnostics import install_gui_diagnostics
     install_gui_diagnostics(PROJECT_ROOT / 'runs' / 'logs', log)
     _ensure_runtime_resources()
+    # 老配置缺新任务键（如 svip）时补进 tasks.order（幂等，GUI/调度器各调一次）
+    from src.settings import migrate_tasks_order
+    migrate_tasks_order()
     if sys.platform == 'win32':
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('QQPetCopilot.Desktop')

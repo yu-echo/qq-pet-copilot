@@ -298,6 +298,25 @@ LOCATORS: dict[str, dict] = {
     'shower_10': {
         'xpath': ['//*[@content-desc="香皂片" or starts-with(@content-desc, "香皂片，剩余")]'],
     },
+
+    # ---- 每日领取 QQ SVIP 会员礼包 ----
+    # 主页宠物状态卡右上角的企鹅帽图标，图标下挂"点击有礼"小标签：
+    # 优先控件 content-desc，再 OCR 标签文字。不能用 cache——需要"判断是否存在"，
+    # 误缓存会把"找不到"固定成"找到"（同 adventure_start 的教训）。
+    'svip_entry': {
+        'xpath': ['//*[@content-desc="点击有礼"]'],
+        'ocr': ['点击有礼'],
+    },
+    # 礼包弹窗标题（"QQ SVIP专属礼包"；OCR 空格归一化后按子串匹配）
+    'svip_dialog': {'ocr': ['SVIP专属礼包']},
+    # 会员且今日未领：领取按钮
+    'svip_claim': {'ocr': ['立即领取']},
+    # 会员且今日已领：按钮变为"明日再来"
+    'svip_tomorrow': {'ocr': ['明日再来']},
+    # 非会员：按钮为"开通 SVIP"（命中即代表账号无 SVIP，任务自动关闭并写回配置）
+    'svip_open': {'ocr': ['开通SVIP']},
+    # 礼包弹窗的小关闭按钮（兜底；主路径用系统返回键关弹窗）
+    'svip_close': {'xpath': ['//*[@content-desc="关闭"]']},
 }
 
 def see(

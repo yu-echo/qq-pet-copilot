@@ -196,7 +196,7 @@ class HireFriendConfig:
 
 # 任务队列调度的任务键（tasks.order 里可配置的任务名）
 TASK_KEYS = ('care', 'adventure', 'visit', 'pk', 'hire_friend', 'friend_care',
-             'school', 'work')
+             'school', 'work', 'svip')
 # 主任务组：冒险/学习/打工/雇佣好友互斥（共用"出门-进行中"一条线，不能同时做），
 # 由 TaskQueueRunner 按 tasks.main_order 统一调度
 MAIN_TASK_KEYS = ('adventure', 'school', 'hire_friend', 'work')
@@ -220,7 +220,7 @@ class TaskItemConfig:
 @dataclass
 class TasksConfig:
     # 执行顺序（> 分隔，越靠前越优先）；不在 order 里的任务不调度
-    order: str = "care>school>friend_care>hire_friend>adventure>visit>pk>work"
+    order: str = "care>school>friend_care>hire_friend>adventure>visit>pk>work>svip"
     # 主任务组（冒险/学习/打工/雇佣好友，互斥）组内优先级（> 分隔，越靠前越优先）；
     # 没列出的主任务按默认顺序兜底排最后
     main_order: str = "school>hire_friend>adventure>work"
@@ -235,6 +235,9 @@ class TasksConfig:
     friend_care: TaskItemConfig = field(default_factory=TaskItemConfig)
     school: TaskItemConfig = field(default_factory=TaskItemConfig)
     work: TaskItemConfig = field(default_factory=TaskItemConfig)
+    # 每日领取 QQ SVIP 会员礼包（默认每日时间点触发一次）
+    svip: TaskItemConfig = field(default_factory=lambda: TaskItemConfig(
+        trigger="daily", daily_times=["09:05"], success_interval=60))
 
 
 @dataclass
