@@ -3,7 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import Mock, patch
@@ -443,6 +443,26 @@ class FullRegression(unittest.TestCase):
         disable.assert_called_once()
         save.assert_not_called()
 
+    def test_svip_reward_popup_means_claimed(self):
+        # 真机 bug 回归：会员未领取时点帽图标是"直接发奖"并弹"恭喜获得"奖励页
+        # （没有"立即领取"按钮），必须判定为领取成功并记进度
+        sc = self._svip_scenario({'svip_entry': (10, 20, 1),
+                                  'svip_dialog': (100, 200, 1),
+                                  'svip_reward': (100, 300, 1)})
+        with patch('scenarios.svip.save_svip_claim') as save, \
+             patch.object(sc, '_close_dialog') as close:
+            self.assertTrue(sc._claim_once())
+        save.assert_called_once_with(True)
+        close.assert_called_once()
+
+    def test_svip_probe_membership_reward_is_member(self):
+        # 探测时撞上"刚领到"的奖励页 -> 也是会员，并顺手记当天已领
+        sc = self._svip_scenario({})
+        sc._open_and_read_state = Mock(return_value=('reward', object()))
+        with patch('scenarios.svip.save_svip_claim') as save:
+            self.assertTrue(sc.probe_membership())
+        save.assert_called_once_with(True)
+
     def test_svip_disable_task_writes_config(self):
         # _disable_task 把 tasks.svip.enabled=false 写回 config.yaml，并打非会员标记
         from scenarios.svip import SvipScenario
@@ -562,10 +582,12 @@ class FullRegression(unittest.TestCase):
                       'EXP_DAILY_PROGRESS_FILE': files['exp'],
                       'SVIP_PROGRESS_FILE': files['svip']}
             with patch.multiple(prog, **consts):
-                prog.save_progress(files['school'], '2026-09-19', 3, {'2026-09-18': 2})
-                prog.save_progress(files['visit'], '2026-09-19', 10, {})
-                prog.save_exp_daily(True, '2026-09-19', {})
-                prog.save_svip_claim(True, '2026-09-19', {})
+                # 用真实当天日期：进度文件按天判定，写死日期会在跨天后失效
+                today_str = date.today().isoformat()
+                prog.save_progress(files['school'], today_str, 3, {'2026-09-18': 2})
+                prog.save_progress(files['visit'], today_str, 10, {})
+                prog.save_exp_daily(True, today_str, {})
+                prog.save_svip_claim(True, today_str, {})
                 reset = prog.reset_daily_progress_for_pet('咕咕嘎嘎')
                 self.assertIn('学习', reset)
                 self.assertIn('踩踩', reset)

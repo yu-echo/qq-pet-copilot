@@ -4,10 +4,14 @@
 入口：主页宠物状态卡右侧图标列的企鹅帽（图标旁偶尔显示"点击有礼"标签）。
 定位顺序：content-desc / OCR 的"点击有礼"标签 -> 模板匹配图标本身
 （find_entry_icon，分辨率无关，见下方常量）。点开是"QQ SVIP专属礼包"弹窗，
-- 会员且今日未领：点"立即领取"领取，记进度后当天不再执行；
+四种状态：
+- 会员且今日未领：真机实测**点帽图标即直接发放**，弹"恭喜获得SVIP专属礼包"
+  奖励页（没有"立即领取"按钮）——识别到"恭喜获得"即判领取成功，记进度后收尾；
 - 会员且今日已领：按钮是"明日再来"，记进度后当天不再执行；
 - 非会员：按钮是"开通 SVIP"——关掉弹窗，并把 tasks.svip.enabled=false 写回
-  config.yaml 自动关闭该任务（调度器 reload_config 每轮热加载，下一轮即生效）。
+  config.yaml 自动关闭该任务（调度器 reload_config 每轮热加载，下一轮即生效），
+  同时打"非会员"标记：之后每天复查一次，恢复会员自动重开；
+- "立即领取"按钮作为兜底分支保留（个别机型/版本可能走按钮确认）。
 
 调度走任务队列：tasks.svip.trigger=daily + daily_times 每天到点执行一次；
 "今天是否已领取"持久化在 runs/svip_progress.json（跨天自动失效）。
@@ -120,6 +124,13 @@ class SvipScenario(DeviceScenario):
             self._disable_task()
             return False
 
+        if state == 'reward':
+            # 点帽图标后直接发奖（真机实测没有"立即领取"按钮），奖励页就是成功凭证
+            log('SVIP礼包: 已领取成功（弹窗显示"恭喜获得SVIP专属礼包"）')
+            save_svip_claim(True)
+            self._close_dialog(screen)
+            return True
+
         if state == 'tomorrow':
             log('SVIP礼包弹窗按钮是"明日再来"：今天已领取过')
             save_svip_claim(True)
@@ -130,11 +141,12 @@ class SvipScenario(DeviceScenario):
             raise RuntimeError('SVIP 弹窗未识别到 领取/明日再来/开通SVIP 任一按钮')
         claim = self.see('svip_claim', screen)
         self.click(claim[0], claim[1])
-        # 领取后可能有奖励展示，等弹窗变为"明日再来"或消失再收尾
+        # 领取后可能有奖励展示/弹窗刷新，等到"恭喜获得"或"明日再来"或弹窗消失再收尾
         for _ in range(CLAIM_SETTLE_ATTEMPTS):
             time.sleep(CLICK_INTERVAL)
             screen = self.screen()
-            if self.see('svip_tomorrow', screen) or not self.see('svip_dialog', screen):
+            if (self.see('svip_reward', screen) or self.see('svip_tomorrow', screen)
+                    or not self.see('svip_dialog', screen)):
                 break
         save_svip_claim(True)
         log('SVIP礼包: 每日会员礼包领取成功')
@@ -144,10 +156,11 @@ class SvipScenario(DeviceScenario):
     # ---- 分步 ----
 
     def _open_and_read_state(self):
-        """点入口 -> 等弹窗 -> 轮询读按钮状态（含"开通 SVIP"复核）。
+        """点入口 -> 等弹窗 -> 轮询读状态（含"开通 SVIP"复核）。
 
-        返回 (state, screen)；state: 'claim'（立即领取）/'tomorrow'（明日再来）/
-        'open'（开通 SVIP）/None（没识别出来）。领不了就抛错交失败退避。
+        返回 (state, screen)；state: 'reward'（领取成功奖励页）/'tomorrow'
+        （今日已领）/'claim'（领取按钮，兜底）/'open'（非会员）/None（没识别出来）。
+        识别不出来就抛错交失败退避。
         """
         hit = self._find_entry()
         if hit is None:
@@ -175,9 +188,9 @@ class SvipScenario(DeviceScenario):
     def probe_membership(self) -> bool | None:
         """会员状态探测（非会员自动关闭期间每日复查用）。
 
-        打开礼包弹窗看按钮：'claim'/'tomorrow' 都是会员 -> True（顺手把
-        "明日再来"记成当天已领取）；复核后仍是 'open' -> False；识别不了
-        -> None（不当成状态变化，明天再试）。
+        打开礼包弹窗看状态：'reward'/'claim'/'tomorrow' 都是会员 -> True
+        （顺手把"刚领到"或"今日已领"记成当天已领取）；复核后仍是 'open'
+        -> False；识别不了 -> None（不当成状态变化，明天再试）。
         """
         self.ensure_main_page()
         try:
@@ -186,9 +199,9 @@ class SvipScenario(DeviceScenario):
             self.ensure_main_page()  # 弹窗可能没开成功，尽量回主页再抛
             raise
         try:
-            if state in ('claim', 'tomorrow'):
-                if state == 'tomorrow':
-                    save_svip_claim(True)
+            if state in ('reward', 'claim', 'tomorrow'):
+                if state in ('reward', 'tomorrow'):
+                    save_svip_claim(True)  # 刚领取成功 / 今天已领取
                 return True
             if state == 'open':
                 return False
@@ -199,9 +212,14 @@ class SvipScenario(DeviceScenario):
             self.ensure_main_page()
 
     def _dialog_state(self, screen) -> str | None:
-        """识别弹窗当前按钮状态：'claim'（立即领取）/ 'tomorrow'（明日再来）/
-        'open'（开通 SVIP）；都不匹配返回 None。顺序：先已领取再领取最后开通，
-        避免 OCR 碎片互相误命中。"""
+        """识别弹窗当前状态：'reward'（领取成功奖励页）/ 'tomorrow'（今日已领）/
+        'claim'（领取按钮，兜底）/ 'open'（非会员）；都不匹配返回 None。
+
+        顺序：先"恭喜获得"（领取成功的强特征），再已领取、领取按钮、开通，
+        避免 OCR 碎片互相误命中。
+        """
+        if self.see('svip_reward', screen):
+            return 'reward'
         if self.see('svip_tomorrow', screen):
             return 'tomorrow'
         if self.see('svip_claim', screen):
@@ -238,18 +256,29 @@ class SvipScenario(DeviceScenario):
         raise RuntimeError('点击入口后未出现 SVIP 礼包弹窗')
 
     def _close_dialog(self, screen=None) -> None:
-        """关掉礼包弹窗：优先点小关闭按钮（content-desc 关闭），否则系统返回键。"""
-        try:
-            source = self.dev.hierarchy()
-            hit = self.see('svip_close', None, source)
-        except Exception:
-            hit = None
-        if hit:
-            self.click(hit[0], hit[1])
-        else:
-            log('SVIP礼包: 未找到关闭按钮，按系统返回键关弹窗')
-            self.go_back()
-        time.sleep(CLICK_INTERVAL)
+        """关掉礼包弹窗：优先点小关闭按钮（content-desc 关闭），否则系统返回键。
+
+        奖励页（"恭喜获得…"+提示"点击空白处关闭"）实测没有关闭控件，走返回键；
+        关完确认弹窗确实消失，没消失再补一次返回。"""
+        for attempt in (1, 2):
+            try:
+                source = self.dev.hierarchy()
+                hit = self.see('svip_close', None, source)
+            except Exception:
+                hit = None
+            if hit:
+                self.click(hit[0], hit[1])
+            else:
+                log('SVIP礼包: 未找到关闭按钮，按系统返回键关弹窗')
+                self.go_back()
+            time.sleep(CLICK_INTERVAL)
+            try:
+                if not self.see('svip_dialog', self.screen()):
+                    return
+            except Exception:
+                return  # 截图/OCR 失败不纠缠，交回主页面检查
+            log('SVIP礼包: 弹窗仍未消失，再按一次返回键')
+        log('SVIP礼包: 弹窗未能确认关闭，交回主页面检查处理')
 
     @staticmethod
     def _disable_task() -> None:
