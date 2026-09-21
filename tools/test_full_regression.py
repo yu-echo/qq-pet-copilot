@@ -166,8 +166,14 @@ class FullRegression(unittest.TestCase):
                     isMinimized=Mock(return_value=False),
                     _disable_scrcpy=Mock(), _enable_scrcpy=Mock())
         window.btn_scrcpy.isChecked.return_value = True
-        with patch('main.start_scrcpy', return_value=Mock()) as start:
-            main.MainWindow._check_scrcpy(window)
+        # scrcpy.exe 是构建期才下载的第三方二进制（.gitignore 排除，不入库），
+        # 用例里用临时文件顶替，否则干净检出（没有该目录）时必然失败。
+        with tempfile.TemporaryDirectory() as folder:
+            fake_scrcpy = Path(folder) / 'scrcpy.exe'
+            fake_scrcpy.touch()
+            with patch.object(main, 'SCRCPY', fake_scrcpy), \
+                 patch('main.start_scrcpy', return_value=Mock()) as start:
+                main.MainWindow._check_scrcpy(window)
         start.assert_called_once()
 
     def test_svip_entry_template_match(self):
