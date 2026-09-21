@@ -158,7 +158,7 @@ scrcpy、OCR 模型及 minitouch 可由 tools 下对应下载脚本准备。
 
 ```bash
 .venv/Scripts/python tools/capture_visit_jump.py -s 127.0.0.1:7555 -c   # 模拟器自动点
-.venv/Scripts/python tools/capture_visit_jump.py -s ba286ada            # 真机手动点
+.venv/Scripts/python tools/capture_visit_jump.py -s ABCD1234            # 真机手动点
 ```
 
 ## 打包 exe
