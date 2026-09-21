@@ -1353,10 +1353,6 @@ class MainWindow(MSFluentWindow):
                 log('未找到 scrcpy 窗口，嵌入失败（调度器仍可正常开始，'
                     '窗口出现后看门狗会自动补嵌入）')
 
-    def _runner_running(self) -> bool:
-        """调度器子进程是否在跑（未点开始/已停止都算没在跑）。"""
-        return self._runner_proc is not None and self._runner_proc.poll() is None
-
     def _check_scrcpy(self) -> None:
         """看门狗：scrcpy 进程掉了（设备 adb reboot/掉线会断开）就重拉并重嵌入。
 
