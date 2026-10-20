@@ -16,9 +16,7 @@
   低于 care 阈值则喂食/洗澡到达标
 - 冒险优先：当天到达 adventure.start_time 且冒险次数未满（adventure.times_per_day）
   -> 优先处理冒险，每次冒险后回主页面重新判断；当天次数用完后等第二天该时间再冒险
-- 学习工作时长规则：学习按学园（初级10/中级20/高级30/进修45 分钟）、
-  打工按所选时长（10分钟/45分钟/2小时）结算累计，累计 >= daily_hour_limit（小时）
-  后今天不再学习只打工，第二天自动清零
+- 学习/打工按金币阈值切换（学习按学园 10/20/30/45 分钟、打工按所选时长结算）
 - 每轮先在主页面 OCR 金币数量（顶部状态栏最右侧数值）
 - 金币 >= schedule.coin_threshold -> 优先学习
 - 金币 < 阈值 -> 先打工（每次打工一轮后重新判断），赚够了自然切换去学习
@@ -169,7 +167,6 @@ class Runner:
         self._employed_last_check = None   # 上次被雇佣检查时间（interval_seconds 起算点）
         sched = self.school.cfg.schedule
         self.threshold = sched.coin_threshold
-        self.daily_hour_limit = sched.daily_hour_limit
         # 旧版点数系数：仅首次运行把老进度次数换算成时长用（不再参与调度）
         self.school_factor = sched.school_factor
         self.work_factor = sched.work_factor
@@ -185,8 +182,6 @@ class Runner:
             raise ValueError(
                 f'config.yaml 中 adventure.start_time 格式无效: {adv.start_time!r}，应为 HH:MM')
         log(f'金币阈值: {self.threshold}，'
-            f'学习工作时长上限: {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时'
-            f'（学习按学园 10/20/30/45 分钟、打工按所选时长结算），'
             f'冒险: 每天 {self.adventure_times} 次 @ {start_time}')
         visit = self.school.cfg.visit
         self.visit_times = visit.times_per_day
@@ -236,28 +231,19 @@ class Runner:
         return last is None or datetime.now() >= last + timedelta(seconds=interval)
 
     def friend_care_due(self) -> bool:
-        """是否该好友护理了：已启用、配置了好友名称、当前时间在时间段内、
-        距上次巡检已过 friend_care.interval_seconds 且不在失败延后期。"""
+        """是否该好友护理了：已启用、配置了好友名称、距上次巡检已过
+        friend_care.interval_seconds 且不在失败延后期（全天可跑，无时间段限制）。"""
         fc = self.friend_care.cfg.friend_care
         if not fc.enabled or not fc.friend_name.strip() or self._deferred('好友护理'):
             return False
         last = getattr(self.friend_care, 'last_care_at', None)
         interval = max(0, int(getattr(fc, 'interval_seconds', 1800) or 0))
-        if last is not None and datetime.now() < last + timedelta(seconds=interval):
-            return False
-        try:
-            start, end = parse_time_range(fc.time_range)
-        except ValueError as e:
-            if not self._fc_bad_range_logged:
-                log(f'{e}，好友护理不调度')
-                self._fc_bad_range_logged = True
-            return False
-        self._fc_bad_range_logged = False
-        return in_time_range(datetime.now().time(), start, end)
+        return last is None or datetime.now() >= last + timedelta(seconds=interval)
 
     def hire_friend_due(self) -> bool:
-        """是否该雇佣好友了：已启用、配置了好友名称、当前在雇佣时间段内、
-        距上次执行已过 hire_friend.interval_seconds、当天次数未满且不在失败延后期。
+        """是否该雇佣好友了：已启用、配置了好友名称、当天次数未满、
+        距上次执行已过 hire_friend.interval_seconds 且不在失败延后期
+        （全天可跑，无时间段限制）。
         纯查询无副作用：last_hire_at 由执行处记录——本方法每轮会被主任务组内
         多个任务的扫描重复调用（_main_choice），在判定里记时间会把雇佣卡死。"""
         hf = self.hire_friend.cfg.hire_friend
@@ -269,19 +255,7 @@ class Runner:
             return False
         last = getattr(self.hire_friend, 'last_hire_at', None)
         interval = max(1, int(getattr(hf, 'interval_seconds', 5) or 5))
-        if last is not None and datetime.now() < last + timedelta(seconds=interval):
-            return False
-        try:
-            start, end = parse_time_range(hf.time_range, 'hire_friend.time_range')
-        except ValueError as e:
-            if not self._hf_bad_time_logged:
-                log(f'{e}，好友雇佣不调度')
-                self._hf_bad_time_logged = True
-            return False
-        self._hf_bad_time_logged = False
-        if not in_time_range(datetime.now().time(), start, end):
-            return False
-        return True
+        return last is None or datetime.now() >= last + timedelta(seconds=interval)
 
     def employed_due(self) -> bool:
         """是否该被雇佣检查了：已启用、当前在被雇佣时间段内、
@@ -322,11 +296,6 @@ class Runner:
     def _load_durations(self) -> tuple[int, int]:
         """读取今日累计时长（带旧版系数迁移）。"""
         return load_durations(self.school_factor, self.work_factor)
-
-    def _duration_over(self, study_s: int, work_s: int) -> bool:
-        """学习+工作时长是否已达上限（daily_hour_limit，0=不限）。"""
-        limit = self.daily_hour_limit
-        return limit > 0 and study_s + work_s >= limit * 3600
 
     def read_main_coins(self) -> int | None:
         """回主页面 OCR 金币数量，失败返回 None。识别成功写状态缓存（GUI 状态条）。"""
@@ -487,7 +456,6 @@ class Runner:
         self._last_cfg = cfg
         sched = cfg.schedule
         self.threshold = sched.coin_threshold
-        self.daily_hour_limit = sched.daily_hour_limit
         self.school_factor = sched.school_factor
         self.work_factor = sched.work_factor
         # schedule 整体替换到各场景实例：check_interval / encourage_times /
@@ -560,9 +528,12 @@ class Runner:
     def _try_moneybags(self) -> bool:
         # Optional, low-frequency work. Never trigger game/device recovery for it.
         from src.moneybag import MoneyBagCollector, INTERVAL
+        # 巡检间隔可在「成长福袋」卡片配置（runner.moneybag_interval_seconds）
+        interval = max(30, int(getattr(self._last_cfg.runner,
+                                       'moneybag_interval_seconds', INTERVAL) or INTERVAL))
         if not hasattr(self, '_moneybag_next') or time.monotonic() < self._moneybag_next:
             return False
-        self._moneybag_next = time.monotonic() + INTERVAL
+        self._moneybag_next = time.monotonic() + interval
         collector = None
         try:
             collector = MoneyBagCollector(self.school.dev)
@@ -770,44 +741,23 @@ class Runner:
                     continue
 
                 study_s, work_s = self._load_durations()
-                over_limit = self._duration_over(study_s, work_s)
-                log(f'今日时长: 已学习 {study_s // 60} 分钟 + 已打工 {work_s // 60} 分钟'
-                    f' = {(study_s + work_s) // 60} 分钟'
-                    f' / 上限 {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时')
-                if over_limit:
-                    # 学习+工作时长达上限：今天不再学习，只打工直到第二天清零
-                    log('学习工作时长已达上限，今天不再学习，只打工')
+                log(f'今日时长: 已学习 {study_s // 60} 分钟 + 已打工 {work_s // 60} 分钟')
 
                 try:
-                    coins = None if over_limit else self.read_main_coins()
+                    coins = self.read_main_coins()
                 except RuntimeError as e:
                     log(f'金币读取失败: {e}，默认先去打工')
                     coins = None
-                prefer_school = not over_limit and coins is not None and coins >= self.threshold
-                if not over_limit:
-                    if coins is None:
-                        log('金币识别失败，默认先去打工')
-                    elif prefer_school:
-                        log(f'金币 {coins} >= 阈值 {self.threshold}，去学习')
-                    else:
-                        log(f'金币 {coins} < 阈值 {self.threshold}，先去打工')
+                prefer_school = coins is not None and coins >= self.threshold
+                if coins is None:
+                    log('金币识别失败，默认先去打工')
+                elif prefer_school:
+                    log(f'金币 {coins} >= 阈值 {self.threshold}，去学习')
+                else:
+                    log(f'金币 {coins} < 阈值 {self.threshold}，先去打工')
 
                 first = (self.school, '学习', school_dead) if prefer_school else (self.work, '打工', work_dead)
                 second = (self.work, '打工', work_dead) if prefer_school else (self.school, '学习', school_dead)
-                if over_limit:
-                    # 学习工作时长达上限时只打工，不回退到学习
-                    if work_dead:
-                        if self._wait_for_deferred(adventure_dead):
-                            continue
-                        log('打工当天已达上限，结束')
-                        return
-                    if not self.run_one(self.work, '打工'):
-                        work_dead = True
-                        if self._wait_for_deferred(adventure_dead):
-                            continue
-                        log('打工当天已达上限，结束')
-                        return
-                    continue
                 if not first[2] and self.run_one(first[0], first[1]):
                     continue
                 if not first[2]:
@@ -942,14 +892,16 @@ class TaskQueueRunner(Runner):
         order: list[str] = []
         self._apply_tasks_config(tasks, order)
         self._sched_day = datetime.now().date()  # 调度日期：跨天时清除任务"当天不可继续"标记
+        # SVIP 礼包：启动固定领一次（无会员/领取失败自动跳过），非会员自动关闭的
+        # 复查也在这里做（恢复会员自动重开任务），之后不再按每日时间点调度
+        self._svip_nonmember_recheck()
+        self._svip_startup_claim()
         log(f'任务队列调度已启用，执行顺序: {" > ".join(TASK_NAMES[k] for k in order)}')
         while True:
             try:
                 # 热修改：每轮调度前重读配置（含 tasks.order 与各任务调度设置）
                 self.reload_config()
                 self._apply_tasks_config(tasks, order)
-                # 非会员自动关闭期间：每天过点后探测一次会员状态，恢复会员自动重开
-                self._svip_nonmember_recheck(tasks)
                 # 跨天（进度按天持久化、第二天清零）：清除各任务"当天不可继续"标记
                 self._rollover_dead_flags(tasks)
                 executed = self._run_first_due(tasks, order)
@@ -986,6 +938,10 @@ class TaskQueueRunner(Runner):
         if not new_order:
             log('tasks.order 为空或全部无效，使用默认顺序')
             new_order = list(TASK_KEYS)
+        # SVIP 礼包改为启动固定领一次（无会员/领取失败自动跳过），不再按每日
+        # 时间点进队列调度（2026-10-20）
+        if 'svip' in new_order:
+            new_order.remove('svip')
         # Removed main tasks must not remain candidates and block the new order.
         # Running activities retain their pending state on the scenario itself.
         for key in list(tasks):
@@ -1107,7 +1063,7 @@ class TaskQueueRunner(Runner):
         return None
 
     def _school_due(self, tasks: dict, ctx: dict) -> bool:
-        """学习是否可执行（主任务组内）：学习工作时长未达上限，且金币 >= 阈值
+        """学习是否可执行（主任务组内）：金币 >= 阈值
         （金币识别失败/不足时本来该打工；打工当天不可继续才回退学习）。
 
         点数/金币每轮循环只读一次（ctx 缓存）：金币读取要截图 OCR，不能每个任务读一次。
@@ -1115,16 +1071,7 @@ class TaskQueueRunner(Runner):
         if ctx.get('durations') is None:
             study_s, work_s = self._load_durations()
             ctx['durations'] = (study_s, work_s)
-            log(f'今日时长: 已学习 {study_s // 60} 分钟 + 已打工 {work_s // 60} 分钟'
-                f' = {(study_s + work_s) // 60} 分钟'
-                f' / 上限 {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时')
-        study_s, work_s = ctx['durations']
-        over_limit = self._duration_over(study_s, work_s)
-        if over_limit:
-            if not ctx.get('over_logged'):
-                ctx['over_logged'] = True
-                log('学习工作时长已达上限，今天不再学习，只打工')
-            return False
+            log(f'今日时长: 已学习 {study_s // 60} 分钟 + 已打工 {work_s // 60} 分钟')
         if ctx.get('coins', _COINS_UNSET) is _COINS_UNSET:
             try:
                 ctx['coins'] = self.read_main_coins()
@@ -1182,27 +1129,21 @@ class TaskQueueRunner(Runner):
                 return 'work'  # 兜底：打工当天可继续就可执行
         return None
 
-    def _svip_nonmember_recheck(self, tasks: dict) -> None:
-        """非会员自动关闭期间的每日复查：探测会员状态，恢复会员就自动重开任务。
+    def _svip_nonmember_recheck(self) -> None:
+        """非会员自动关闭状态的启动复查：探测会员状态，恢复会员就自动重开任务。
 
-        只在 tasks.svip 存在、开关是关、且带"非会员自动关闭"标记时探测；
-        每天最多一次，且过了当天的 svip 每日时间点才做（与正常执行同节奏）。
-        手动关开关（无标记）不会触发探测，尊重用户的选择。
+        只在 tasks.svip 开关是关、且带"非会员自动关闭"标记时探测（每次启动最多
+        一次）。手动关开关（无标记）不会触发探测，尊重用户的选择。
         """
-        task = tasks.get('svip')
-        if task is None or task.cfg.enabled or not svip_nonmember_flag():
+        if not svip_nonmember_flag():
             return
-        now = datetime.now()
-        if getattr(self, '_svip_recheck_date', None) == now.date():
-            return  # 今天已复查过
-        if self._latest_daily_time(task.cfg.daily_times, now) is None:
-            return  # 还没到今天的 svip 时间点
-        self._svip_recheck_date = now.date()
+        if load_config().tasks.svip.enabled:
+            return
         log('SVIP礼包: 处于非会员自动关闭状态，探测一次会员状态...')
         try:
             member = self.svip.probe_membership()
         except Exception as e:
-            log(f'SVIP 会员状态探测失败: {e}，明天再试')
+            log(f'SVIP 会员状态探测失败: {e}')
             return
         if member:
             from src.settings import load_raw, save_raw, set_value
@@ -1213,7 +1154,18 @@ class TaskQueueRunner(Runner):
         elif member is False:
             log('复查结果: 仍未开通 SVIP 会员，继续保持任务关闭')
         else:
-            log('复查结果: 未能识别礼包弹窗，明天再试')
+            log('复查结果: 未能识别礼包弹窗')
+
+    def _svip_startup_claim(self) -> None:
+        """SVIP 礼包启动固定领一次：无会员/领取失败只记日志跳过，不重试不告警
+        （游戏本身每天只能领一次，重复启动会因当日已领被场景自行跳过）。"""
+        if not load_config().tasks.svip.enabled:
+            return
+        log('SVIP礼包: 启动领取一次...')
+        try:
+            self.run_one(self.svip, 'SVIP礼包', fatal=False)
+        except ScenarioFailed as e:
+            log(f'SVIP礼包 领取失败，自动跳过: {e}')
 
     def _task_due(self, key: str, tasks: dict, ctx: dict) -> bool:
         """任务自身的执行条件（配额/场景时间窗/主任务组统一判定），在 _eligible 之后判定。"""
@@ -1474,14 +1426,11 @@ class TaskQueueRunner(Runner):
 
     def _main_finished(self, tasks: dict) -> bool:
         """主任务组（冒险/学习/打工/雇佣好友）今天是否已全部结束：
-        学习不可继续或学习工作时长达上限，打工不可继续，冒险/雇佣好友当天结束，
-        且组内没有进行中的 pending（pending 未收尾不能退出，否则丢失计数）。"""
+        学习/打工不可继续，冒险/雇佣好友当天结束，且组内没有进行中的 pending
+        （pending 未收尾不能退出，否则丢失计数）。"""
         if self._main_pending_scen() is not None:
             return False
-        study_s, work_s = self._load_durations()
-        school_done = (self._dead(tasks, 'school')
-                       or self._duration_over(study_s, work_s))
-        return (school_done and self._dead(tasks, 'work')
+        return (self._dead(tasks, 'school') and self._dead(tasks, 'work')
                 and self._adventure_done(tasks) and self._hire_friend_done(tasks))
 
     def _sleep_until_next(self, tasks: dict, order: list) -> bool:

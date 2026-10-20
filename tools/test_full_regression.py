@@ -497,30 +497,32 @@ class FullRegression(unittest.TestCase):
         self.assertIsNone(sc.probe_membership())  # 识别不了不当成状态变化
 
     def test_svip_recheck_reopens_task_for_member(self):
-        # 非会员自动关闭期间：每天探测一次，恢复会员 -> 自动写回 enabled=true
-        from datetime import time as dtime
-        from scenarios.runner import TaskQueueRunner, _QueueTask
+        # 非会员自动关闭状态：每次启动探测一次，恢复会员 -> 自动写回 enabled=true
+        from scenarios.runner import TaskQueueRunner
         runner = TaskQueueRunner.__new__(TaskQueueRunner)
         runner.svip = Mock()
         runner.svip.probe_membership.return_value = True
-        runner._latest_daily_time = Mock(return_value=dtime(9, 5))
-        task = _QueueTask('svip')
-        task.cfg.enabled = False
         data = {'tasks': {'svip': {'enabled': False}}}
         with patch('scenarios.runner.svip_nonmember_flag', return_value=True), \
+             patch('scenarios.runner.load_config') as load_cfg, \
              patch('src.settings.load_raw', return_value=data), \
              patch('src.settings.save_raw') as save_raw:
-            runner._svip_nonmember_recheck({'svip': task})
-            # 同一天不重复探测
-            runner._svip_nonmember_recheck({'svip': task})
-        self.assertEqual(runner.svip.probe_membership.call_count, 1)
+            load_cfg.return_value.tasks.svip.enabled = False
+            runner._svip_nonmember_recheck()
         save_raw.assert_called_once()
         self.assertTrue(data['tasks']['svip']['enabled'])
         # 手动关闭（无非会员标记）：不探测
         with patch('scenarios.runner.svip_nonmember_flag', return_value=False), \
              patch('src.settings.save_raw') as save_raw2:
-            runner._svip_nonmember_recheck({'svip': task})
+            runner._svip_nonmember_recheck()
         save_raw2.assert_not_called()
+        # 开关本来就开着：不探测
+        runner.svip.probe_membership.reset_mock()
+        with patch('scenarios.runner.svip_nonmember_flag', return_value=True), \
+             patch('scenarios.runner.load_config') as load_cfg2:
+            load_cfg2.return_value.tasks.svip.enabled = True
+            runner._svip_nonmember_recheck()
+        runner.svip.probe_membership.assert_not_called()
 
     def test_migrate_tasks_order_appends_new_keys(self):
         # 老配置 tasks.order 缺 svip：启动迁移自动追加到队尾；已有则不写盘

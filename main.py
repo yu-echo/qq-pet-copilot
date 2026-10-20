@@ -352,17 +352,13 @@ SETTING_FIELDS = [
 
 # 任务选项卡字段：任务队列顺序 + 各场景任务相关设置
 TASK_SETTING_FIELDS = [
-    # 计划表已经覆盖：tasks.order / main_order / school / work / adventure 的次数与参数
-    # 迁移到「计划」页的「更多设置」（见 PLAN_EXTRA_FIELDS）。
-    ('schedule.daily_hour_limit', '学习工作时长上限（小时，0 不限）', 'int'),
-    ('schedule.encourage_times', '鼓励次数（进行中页面快速点击）', 'int'),
+    # 计划表已经覆盖：tasks.order / main_order / school / work / adventure 的次数与参数；
+    # 时长上限、鼓励次数、护理方式已删除或挪进「活动与护理」卡（2026-10-20）
     ('adventure.skip_bad_weather', '冒险跳过"天色不对"', 'bool'),
     ('adventure.batch', '单轮冒险次数', 'int'),
     ('friend_care.friend_name', '护理好友名称', 'str'),
     ('friend_care.method', '护理好友方式', ['一键护理', 'ocr检测']),
     ('hire_friend.friend_name', '雇佣好友名称', 'str'),
-    ('care.method', '护理方式', ['一键护理', 'ocr检测']),
-    # 体力/清洁阈值与自动喂食/洗护开关已挪到「活动与护理」卡片，这里不再重复列出
     ('employed.enabled', '被雇佣开关', 'bool'),
     ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
     ('employed.time_range', '被雇佣时间段', 'str'),
@@ -1583,16 +1579,6 @@ class MainWindow(MSFluentWindow):
                 continue
         return None
 
-    @classmethod
-    def _parse_range_text(cls, value: str) -> bool:
-        """校验启用时段文本：HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS（允许跨零点）。"""
-        try:
-            start_s, end_s = str(value).split('-', 1)
-        except ValueError:
-            return False
-        return (cls._clock_to_time(start_s.strip()) is not None
-                and cls._clock_to_time(end_s.strip()) is not None)
-
     @staticmethod
     def _qtime_from_value(value) -> 'QTime':
         """把 HH:MM 字符串 / YAML 1.1 分钟数转成 QTime，非法回退 00:00。"""
@@ -1802,6 +1788,38 @@ class MainWindow(MSFluentWindow):
 
         slider.valueChanged.connect(lambda v: sync(slider, spin, v))
         spin.valueChanged.connect(lambda v: sync(spin, slider, v))
+
+        # -- 护理检查：方式 + 间隔（原独立「护理」卡并到这里，全天按间隔检查）--
+        care_row = QHBoxLayout()
+        care_row.setSpacing(14)
+        care_text = QVBoxLayout()
+        care_text.setContentsMargins(0, 0, 0, 0)
+        care_text.setSpacing(2)
+        care_text.addWidget(StrongBodyLabel('护理检查'))
+        care_text.addWidget(CaptionLabel('全天按间隔检查体力/清洁，低于阈值才喂食/洗澡'))
+        care_row.addLayout(care_text, 1)
+
+        method_combo = ComboBox()
+        for method in ('ocr检测', '一键护理'):
+            method_combo.addItem(method, userData=method)
+        method = cfg.care.method if cfg.care.method in ('ocr检测', '一键护理') else 'ocr检测'
+        method_combo.setCurrentIndex(method_combo.findData(method))
+        method_combo.setFixedWidth(120)
+        method_combo.currentIndexChanged.connect(
+            lambda _i, c=method_combo: (self._save_schedule_values(
+                {'care.method': c.currentData()}),
+                self._on_care_method_changed(c.currentData())))
+        care_row.addWidget(method_combo)
+
+        interval_spin = _NoWheelSpinBox()
+        interval_spin.setRange(10, 86400)
+        interval_spin.setValue(max(10, int(cfg.care.interval_seconds)))
+        interval_spin.setSuffix(' 秒')
+        interval_spin.setFixedWidth(132)
+        interval_spin.valueChanged.connect(
+            lambda v: self._save_schedule_interval('care', int(v)))
+        care_row.addWidget(interval_spin)
+        lay.addLayout(care_row)
 
         # -- 自动喂食 / 自动洗护：并排两张，窄窗口也不换行（各占一半）--
         care_row = QHBoxLayout()
@@ -2154,20 +2172,19 @@ class MainWindow(MSFluentWindow):
     # ---- 间隔 / 每日任务卡片 ----
 
     def _build_plan_side_cards(self) -> QWidget:
-        """不占主任务线的功能：每日定时、固定间隔。踩踩/PK 单独合并成一张卡。"""
+        """不占主任务线的功能。护理并进「活动与护理」卡，踩踩/PK 合并成单独一张卡。"""
         wrap = QWidget()
         grid = QGridLayout(wrap)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(10)
         cards = [
-            self._build_plan_task_card('svip', 'SVIP 礼包', '每日定时领取一次', time_edit=True),
-            self._build_plan_task_card('care', '护理', '按间隔检查体力/清洁并处理',
-                                       interval=True),
+            self._build_plan_task_card('svip', 'SVIP 礼包',
+                                       '每次启动领取一次，无会员/领取失败自动跳过'),
             self._build_moneybag_card(),
-            self._build_plan_task_card('friend_care', '好友护理', '时间段内巡检好友宠物',
-                                       interval=True, time_range=True),
-            self._build_plan_task_card('hire_friend', '雇佣好友', '时间段内雇佣好友打工',
-                                       interval=True, time_range=True, count=True),
+            self._build_plan_task_card('friend_care', '好友护理', '按间隔巡检好友宠物（全天）',
+                                       interval=True),
+            self._build_plan_task_card('hire_friend', '雇佣好友', '按间隔雇佣好友打工（全天）',
+                                       interval=True, count=True),
         ]
         # 两列：卡片本身有最小宽度，三列在默认窗口（约 1200 逻辑宽）下会被挤到窗口外
         for i, widget in enumerate(cards):
@@ -2287,8 +2304,7 @@ class MainWindow(MSFluentWindow):
         return section
 
     def _build_plan_task_card(self, key: str, title: str, subtitle: str,
-                              time_edit: bool = False, interval: bool = False,
-                              time_range: bool = False, count: bool = False) -> QWidget:
+                              interval: bool = False, count: bool = False) -> QWidget:
         cfg = load_config()
         item = getattr(cfg.tasks, key)
         card = SimpleCardWidget()
@@ -2313,17 +2329,6 @@ class MainWindow(MSFluentWindow):
         head.addWidget(switch)
         lay.addLayout(head)
 
-        if time_edit:
-            value = (item.daily_times[0] if key == 'svip' and item.daily_times
-                     else getattr(cfg, key).start_time)
-            te = _NoWheelTimeEdit()
-            te.setDisplayFormat('HH:mm')
-            te.setTime(self._qtime_from_value(value))
-            te.timeChanged.connect(
-                lambda qt, k=key: (self._save_schedule_daily_time(k, qt) if k == 'svip'
-                                   else self._save_schedule_time(k, qt)))
-            lay.addWidget(self._plan_param_row('每日时间', te))
-
         if interval:
             seconds = (getattr(cfg.tasks, key).interval_seconds if key == 'care'
                        else getattr(cfg, key).interval_seconds)
@@ -2346,26 +2351,17 @@ class MainWindow(MSFluentWindow):
                 lambda v, k=key: self._save_schedule_values({f'{k}.times_per_day': int(v)}))
             lay.addWidget(self._plan_param_row('每日次数', spin))
 
-        if time_range:
-            value = str(getattr(cfg, key).time_range)
-            edit = LineEdit()
-            edit.setText(value)
-            edit.setPlaceholderText('如 14:00-19:30')
-            edit.editingFinished.connect(
-                lambda e=edit, k=key: self._save_schedule_range(k, e.text()))
-            lay.addWidget(self._plan_param_row('启用时段', edit))
-
         lay.addStretch(1)
         return card
 
     def _build_moneybag_card(self) -> QWidget:
-        """成长福袋：固定间隔巡检（runner 内部 300 秒），只展示累计金币。"""
+        """成长福袋：按间隔巡检好友家福袋（间隔可配），不占计划条目。"""
         card = SimpleCardWidget()
         lay = QVBoxLayout(card)
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(6)
         lay.addWidget(StrongBodyLabel('成长福袋'))
-        tip = CaptionLabel('固定间隔巡检好友家福袋，不占用计划条目')
+        tip = CaptionLabel('按间隔巡检好友家福袋，不占用计划条目')
         tip.setWordWrap(True)
         lay.addWidget(tip)
         try:
@@ -2373,7 +2369,14 @@ class MainWindow(MSFluentWindow):
         except Exception:
             coins = 0
         lay.addWidget(self._plan_param_row('今日累计', StrongBodyLabel(f'{coins} 金币')))
-        lay.addWidget(self._plan_param_row('巡检间隔', BodyLabel('5 分钟（固定）')))
+        spin = _NoWheelSpinBox()
+        spin.setRange(30, 86400)
+        spin.setValue(max(30, int(getattr(load_config().runner,
+                                          'moneybag_interval_seconds', 300) or 300)))
+        spin.setSuffix(' 秒')
+        spin.valueChanged.connect(
+            lambda v: self._save_schedule_values({'runner.moneybag_interval_seconds': int(v)}))
+        lay.addWidget(self._plan_param_row('巡检间隔', spin))
         lay.addStretch(1)
         return card
 
@@ -2584,31 +2587,6 @@ class MainWindow(MSFluentWindow):
         self._save_schedule_values({f'{key}.start_time': quoted,
                                     f'tasks.{key}.daily_times': [quoted]})
 
-    def _save_schedule_daily_time(self, key: str, qtime: 'QTime') -> None:
-        """保存每日领取时间（SVIP礼包这类只有队列 daily_times 的每日任务）。"""
-        value = qtime.toString('HH:mm')
-        quoted = DoubleQuotedScalarString(value)
-        self._save_schedule_values({f'tasks.{key}.daily_times': [quoted]})
-
-    def _save_schedule_range(self, key: str, text: str) -> None:
-        """保存启用时段：好友护理/雇佣好友同时写场景 time_range 与队列
-        enabled_time_range；格式非法恢复原值。"""
-        value = text.strip()
-        if not self._parse_range_text(value):
-            log(f'启用时段格式无效: {value!r}，应为 HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS，已恢复')
-            try:
-                self._rebuild_plan_rows()
-            except Exception as e:
-                log(f'恢复计划表失败: {e}')
-            return
-        quoted = DoubleQuotedScalarString(value)
-        if key in ('hire_friend', 'friend_care'):
-            mapping = {f'{key}.time_range': quoted,
-                       f'tasks.{key}.enabled_time_range': quoted}
-        else:
-            mapping = {f'tasks.{key}.enabled_time_range': quoted}
-        self._save_schedule_values(mapping)
-
     # ---- 下次执行 ----
 
     @staticmethod
@@ -2631,21 +2609,6 @@ class MainWindow(MSFluentWindow):
         if 0 <= delta < 86400:
             base += f'（{_format_remaining(delta)}后）'
         return base
-
-    @classmethod
-    def _in_time_range(cls, now, value: str) -> bool:
-        """now 是否在 HH:MM-HH:MM 时间段内（结束早于开始视为跨零点）。"""
-        try:
-            start_s, end_s = str(value).split('-', 1)
-        except ValueError:
-            return False
-        start = cls._clock_to_time(start_s.strip())
-        end = cls._clock_to_time(end_s.strip())
-        if start is None or end is None:
-            return False
-        if end > start:
-            return start <= now.time() < end
-        return now.time() >= start or now.time() < end
 
     def _predict_next(self, key: str, item, cfg, now) -> str:
         """调度器未运行/无运行时状态时，按配置推算下次执行（展示用途）。"""
@@ -2673,53 +2636,19 @@ class MainWindow(MSFluentWindow):
             hf = cfg.hire_friend
             if not hf.enabled or not (hf.friend_name or '').strip() or not hf.times_per_day:
                 return '—'
-            start_t = self._clock_to_time(str(hf.time_range).split('-', 1)[0].strip())
-            if start_t is None:
-                return '—'
-            start_dt = datetime.combine(now.date(), start_t)
             _, done, _ = load_progress(HIRE_FRIEND_PROGRESS_FILE, quiet=True)
-            if done >= hf.times_per_day:
-                nxt = start_dt if start_dt > now else start_dt + timedelta(days=1)
-                return self._fmt_next_dt(nxt, now)
-            if self._in_time_range(now, hf.time_range):
-                return '现在可执行'
-            nxt = start_dt if start_dt > now else start_dt + timedelta(days=1)
-            return self._fmt_next_dt(nxt, now)
+            return '—' if done >= hf.times_per_day else '现在可执行'
         if key == 'friend_care':
             fc = cfg.friend_care
             if not fc.enabled or not (fc.friend_name or '').strip():
                 return '—'
-            start_t = self._clock_to_time(str(fc.time_range).split('-', 1)[0].strip())
-            if start_t is None:
-                return '—'
-            start_dt = datetime.combine(now.date(), start_t)
-            if self._in_time_range(now, fc.time_range):
-                return '现在可执行'
-            nxt = start_dt if start_dt > now else start_dt + timedelta(days=1)
-            return self._fmt_next_dt(nxt, now)
+            return '现在可执行'
         if key in ('school', 'work'):
             return '启动后判定'
         if key == 'svip':
-            times = [self._clock_to_time(str(t)) for t in (item.daily_times or [])]
-            times = [t for t in times if t is not None]
-            if not times:
-                return '—'
+            # 启动固定领一次：只看今天领过没有
             _, claimed, _ = load_svip_claim(quiet=True)
-            if claimed:
-                # 今天已领取：显示下一次领取时间（今天未到的最近时间点/明天的）
-                nxt = None
-                for t in times:
-                    dt = datetime.combine(now.date(), t)
-                    if dt <= now:
-                        dt += timedelta(days=1)
-                    if nxt is None or dt < nxt:
-                        nxt = dt
-                return self._fmt_next_dt(nxt, now)
-            for t in times:  # 未领取：今天还有没到的时间点就等它，已过即可执行
-                dt = datetime.combine(now.date(), t)
-                if dt > now:
-                    return self._fmt_next_dt(dt, now)
-            return '现在可执行'
+            return '今日已领取' if claimed else '下次启动时'
         return '—'
 
     def _next_exec_text(self, key: str, item, cfg, state: dict, running: bool,
