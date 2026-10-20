@@ -38,6 +38,7 @@ DEFAULTS = {
     'schedule.encourage_times': 10,
     'adventure.times_per_day': 1,
     'adventure.start_time': '08:00',
+    'adventure.duration': '45秒',
     'adventure.skip_bad_weather': True,
     'adventure.batch': 12,
     'visit.times_per_day': 10,
@@ -107,6 +108,8 @@ def validate_field(key: str, value):
         return (True, value) if value in ('task_queue', 'legacy') else (False, default)
     if key == 'control.method':
         return (True, value) if value in ('injectInputEvent', 'minitouch') else (False, default)
+    if key == 'adventure.duration':
+        return (True, value) if value in ('45秒', '2小时') else (False, default)
     if key == 'gui.theme':
         return (True, value) if value in ('跟随系统', '深色', '浅色') else (False, default)
     if key == 'gui.close_action':
@@ -224,6 +227,10 @@ def migrate_tasks_order() -> None:
     from src.progress import log
 
     try:
+        if not CONFIG_FILE.exists():
+            # 首次启动还没有 config.yaml：默认配置本身就包含 NEW_TASK_KEYS，
+            # 不需要迁移，更不能因为文件不存在就报"迁移失败"吓用户
+            return
         data = load_raw()
         order = str(get_value(data, 'tasks.order') or '').strip()
         if not order:

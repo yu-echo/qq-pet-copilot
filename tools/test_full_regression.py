@@ -371,6 +371,7 @@ class FullRegression(unittest.TestCase):
             sc=AdventureScenario.__new__(AdventureScenario)
             sc.skip_bad_weather=True; sc.defer_wait=True
             sc.click_until_gone_or_see=Mock(); sc.recall_bad_weather=Mock(return_value=recall)
+            sc.select_duration=Mock()  # 时长选择单独用例覆盖，这里只测正常/召回两条路径
             sc.defer_busy_end=Mock(); sc.ensure_main_page=Mock()
             with patch('scenarios.adventure.count_cross') as count:
                 self.assertEqual(sc.do_adventure(),recall)
@@ -757,6 +758,186 @@ class FullRegression(unittest.TestCase):
         from src.notify import send_alert
         with patch('src.notify.load_config',return_value=NS(notify=NS(win_toast=True,onepush_config=''))), patch('src.notify._send_windows_toast',side_effect=RuntimeError('test')):
             self.assertFalse(send_alert('本地测试，不对外发送'))
+
+    def test_main_page_rejects_care_panel_overlay(self):
+        """洗澡页误判回归：护理面板盖在主页上时不算可操作的主页。
+
+        面板是浮层，底下主页的"金币胶囊"节点仍在控件树里且坐标不变，
+        只看金币胶囊会误判，随后在面板上点出门/按键直到超时。
+        """
+        from src.scenario import DeviceScenario
+        dev = Mock()
+        dev.current_package.return_value = 'com.tencent.mobileqq'
+        sc = DeviceScenario(dev=dev)
+        with patch.object(sc, 'see', side_effect=lambda n, screen=None, source=None:
+                          (540, 240, 1.0) if n == 'main_sign' else None):
+            self.assertIsNotNone(sc._on_main_page())
+        for overlay in ('shower_10', 'feed_10', 'buy_soap', 'exchange_food'):
+            with patch.object(sc, 'see', side_effect=lambda n, screen=None, source=None:
+                              (540, 240, 1.0) if n in ('main_sign', overlay) else None):
+                self.assertIsNone(sc._on_main_page(), overlay)
+
+    def test_leave_home_has_no_blind_coordinate_fallback(self):
+        """出门找不到时必须报错走恢复，不能按参考坐标盲点（真机连点 3 次的根因）。"""
+        from src.locators import LOCATORS
+        self.assertNotIn('rel', LOCATORS['leave_home'])
+
+    def test_resumed_package_parses_top_activity(self):
+        """前台包名以系统 resumed activity 为准（u2 的 app_current 在 MIUI 上不准）。"""
+        from src.adb.device import Device
+        dev = Device('adb')
+        ok = NS(returncode=0, stdout=(
+            b'topResumedActivity=ActivityRecord{55059907 u0 '
+            b'com.tencent.mobileqq/com.tencent.robot.adelie.AdelieFragmentActivity t26079}\n'))
+        with patch.object(dev, '_run', return_value=ok):
+            self.assertEqual(dev.resumed_package(), 'com.tencent.mobileqq')
+        with patch.object(dev, '_run', return_value=NS(returncode=1, stdout=b'')):
+            self.assertEqual(dev.resumed_package(), '')
+
+    def test_foreground_guard_blocks_other_apps(self):
+        """用户切到别的 App 时必须立刻停手，不能盲点/盲拖。"""
+        from src.scenario import DeviceScenario
+        dev = Mock()
+        dev.current_package.return_value = 'com.eg.android.AlipayGphone'
+        sc = DeviceScenario(dev=dev)
+        with self.assertRaises(RuntimeError):
+            sc.ensure_game_foreground()
+        dev.current_package.return_value = 'com.tencent.mobileqq'
+        sc.ensure_game_foreground()  # 前台是 QQ 不抛
+        dev.current_package.return_value = ''
+        sc.ensure_game_foreground()  # 取不到包名不阻断主流程
+
+    def test_adventure_duration_defaults_to_short(self):
+        """冒险默认选 45 秒的"附近走走"，不是 2 小时的"诗和远方"。"""
+        from src.config import AdventureConfig
+        from src import settings as settings_io
+        self.assertEqual(AdventureConfig().duration, '45秒')
+        self.assertEqual(settings_io.DEFAULTS['adventure.duration'], '45秒')
+        ok, value = settings_io.validate_field('adventure.duration', '3小时')
+        self.assertFalse(ok)
+        self.assertEqual(value, '45秒')
+        ok, value = settings_io.validate_field('adventure.duration', '2小时')
+        self.assertTrue(ok)
+
+    def test_select_duration_clicks_configured_option(self):
+        """准备页按配置点选时长，并用"简介"文字确认真的选中了。"""
+        from scenarios.adventure import AdventureScenario
+        sc = AdventureScenario(dev=Mock())
+        sc.duration = '45秒'
+        state = {'selected': False, 'clicks': []}
+
+        def fake_see(name, screen=None, source=None):
+            if name in ('adventure_start', 'adventure_short'):
+                return (100, 200, 1.0)
+            if name == 'adventure_short_desc':
+                return (1, 1, 1.0) if state['selected'] else None
+            return None
+
+        def fake_click(x, y):
+            state['clicks'].append((x, y))
+            state['selected'] = True  # 点完简介才变成短时
+
+        with patch.object(sc, 'see', side_effect=fake_see),              patch.object(sc, 'click', side_effect=fake_click):
+            sc.select_duration()
+        self.assertEqual(state['clicks'], [(100, 200)], '未选中时应点一次选项')
+        # 已经是目标时长：连跑时不该重复点
+        with patch.object(sc, 'see', side_effect=fake_see),              patch.object(sc, 'click', side_effect=fake_click):
+            sc.select_duration()
+        self.assertEqual(len(state['clicks']), 1, '已选中时不应重复点击')
+        # 点了但简介没变 = 没选中，必须报错（否则真的会跑 2 小时）
+        with patch.object(sc, 'see', side_effect=lambda n, screen=None, source=None:
+                          (100, 200, 1.0) if n in ('adventure_start', 'adventure_short') else None),              patch.object(sc, 'click'):
+            with self.assertRaises(RuntimeError):
+                sc.select_duration()
+
+    def test_adventure_start_accepts_new_button_text(self):
+        """2026-10 新版冒险按钮文案是"出发"，旧的"开始"仍要兼容。"""
+        from src.locators import LOCATORS
+        entry = LOCATORS['adventure_start']
+        self.assertIn('//*[@content-desc="出发"]', entry['xpath'])
+        self.assertIn('//*[@content-desc="开始"]', entry['xpath'])
+        self.assertIn('出发', entry['ocr'])
+
+    def test_svip_entry_matches_left_icon_column(self):
+        """2026-10 新版图标列在左侧：模板匹配必须能找到（旧 ROI 只在右侧）。"""
+        import cv2
+        from scenarios.svip import find_entry_icon
+        from src.config import resource_path
+        tpl = cv2.imdecode(
+            np.fromfile(resource_path('resources/svip-entry.png'), dtype=np.uint8),
+            cv2.IMREAD_GRAYSCALE)
+        screen = np.full((1200, 1080, 3), 240, dtype=np.uint8)
+        size = 70
+        tx, ty = 90, 850  # 左侧图标列 ROI（x 30~240, y 500~1300）
+        screen[ty:ty + size, tx:tx + size] = cv2.cvtColor(
+            cv2.resize(tpl, (size, size)), cv2.COLOR_GRAY2RGB)
+        hit = find_entry_icon(screen)
+        self.assertIsNotNone(hit)
+        cx, cy, score = hit
+        self.assertGreater(score, 0.85)
+        self.assertLess(abs(cx - (tx + size // 2)), 10)
+        self.assertLess(abs(cy - (ty + size // 2)), 10)
+
+    def test_inventory_ocr_tolerates_short_noise(self):
+        """OCR 把 '98' 认成 'L8' 时不能当成"库存为 0"去误购。"""
+        from scenarios.care import nearest_item_count
+        self.assertEqual(nearest_item_count([('L8', 100, 100, 1)], 100, 100), 8)
+        self.assertEqual(nearest_item_count([('x12', 100, 100, 1)], 100, 100), 12)
+        self.assertIsNone(nearest_item_count([('美', 100, 100, 1)], 100, 100))
+
+    def test_migrate_tasks_order_skips_missing_config(self):
+        """首次启动 config.yaml 还不存在时，迁移应静默跳过而不是报失败。"""
+        from src import settings
+        with tempfile.TemporaryDirectory() as td:
+            missing = Path(td) / 'config.yaml'
+            with patch.object(settings, 'CONFIG_FILE', missing):
+                settings.migrate_tasks_order()
+            self.assertFalse(missing.exists())
+
+    def test_scrcpy_serial_falls_back_to_first_online_device(self):
+        """多设备在线且配置留空时，scrcpy 必须带上 -s，否则会直接退出。"""
+        import main
+        with patch.object(main, 'load_config',
+                          return_value=NS(adb=NS(path='adb', device_serial=''))), \
+             patch.object(main, 'find_adb', return_value='adb'), \
+             patch.object(main.Device, 'ensure_connected', return_value='3a4e7af5'):
+            self.assertEqual(main._resolve_serial(), '3a4e7af5')
+        with patch.object(main, 'load_config',
+                          return_value=NS(adb=NS(path='adb', device_serial='ABC123'))):
+            self.assertEqual(main._resolve_serial(), 'ABC123')
+
+    def test_update_check_falls_back_to_release_page(self):
+        """GitHub API 403/限流时改用公开 Release 页面拿最新版本。"""
+        from urllib.error import HTTPError
+        from src import update_checker as uc
+
+        class FakeResp:
+            def __init__(self, url):
+                self._url = url
+
+            def geturl(self):
+                return self._url
+
+            def read(self):
+                return b''
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(req, timeout=0):
+            url = getattr(req, 'full_url', str(req))
+            if 'api.github.com' in url:
+                raise HTTPError(url, 403, 'rate limited', {}, None)
+            return FakeResp('https://github.com/hu181b/qq-pet-copilot/releases/tag/v1.41')
+
+        with patch.object(uc, 'urlopen', side_effect=fake_urlopen):
+            result = uc.check_github_latest_release('hu181b/qq-pet-copilot', '1.4')
+        self.assertTrue(result.ok)
+        self.assertTrue(result.has_update)
+        self.assertEqual(result.latest_tag, 'v1.41')
 
 
 if __name__=='__main__':

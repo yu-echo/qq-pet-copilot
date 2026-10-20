@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timedelta
 
 from .config import find_adb, load_config
-from .locators import LOCATORS, ocr_screen
+from .locators import LOCATORS, invalidate_bounds_cache, ocr_screen
 from .locators import see as locate
 from .locators import see_all as locate_all
 from .ocr import parse_employed_ratio, parse_employed_remaining
@@ -18,6 +18,9 @@ from .progress import (
 from .u2dev import U2Device
 
 # ---- 可调参数 ----
+GAME_PACKAGE = 'com.tencent.mobileqq'  # QQ 宠物所在宿主 App；前台不是它就停止操作
+# 盖在主页上的护理浮层（各自带道具节点）：有这些节点说明当前不在可操作的主页
+HOME_OVERLAY_SIGNS = ('feed_10', 'exchange_food', 'shower_10', 'buy_soap')
 CLICK_INTERVAL = 1.0       # 连续点击/重试间隔（秒）
 NAV_TIMEOUT = 10           # 单个阶段最多重试次数，超过认为卡死抛异常
 MAIN_PAGE_ATTEMPTS = 10    # 回主页面最多尝试次数（识别 main_sign / 点 back）
@@ -94,6 +97,42 @@ class DeviceScenario:
     def snapshot(self):
         """抓一轮检测用的快照：(屏幕截图, 控件树快照)。"""
         return self.screen(), self.dev.hierarchy()
+
+    def ensure_game_foreground(self) -> None:
+        """确认前台是 QQ；不是就立刻停手，避免在别的 App 上盲点/盲拖。
+
+        真机事故：用户在脚本运行期间切到支付宝，搓洗循环仍在固定坐标上
+        拖拽，等于对着支付页面乱划。这里宁可让任务失败走恢复链路，也不能
+        继续在别的应用上注入触摸事件。
+        """
+        pkg = self.dev.current_package()
+        if pkg and not pkg.startswith(GAME_PACKAGE):
+            raise RuntimeError(
+                f'当前前台应用是 {pkg}，不是 QQ（{GAME_PACKAGE}），'
+                '已停止操作以免误触其他应用')
+
+    def _on_main_page(self, screen=None, source=None):
+        """主页面判定：金币胶囊在，且没有喂食/洗澡面板盖在上面。
+
+        喂食/洗澡面板是浮层，底下主页的控件树节点（含金币胶囊）仍然存在且
+        坐标不变，只看金币胶囊会把面板页当成"可操作的主页"，随后在面板上
+        点出门/按键直到超时（2026-10-19 00:00:48 真机截图即此现场）。
+        面板本身有饼干/香皂道具节点，靠它排除，不用"出门按钮"——宠物打工中
+        主页底部是"打工"进度而不是"出门"，用出门判定会把正常主页误判成非主页。
+        """
+        if source is None:
+            # 一次判定要查 5 个定位，共用同一份控件树，别每个都重新 dump
+            source = self.dev.hierarchy()
+        hit = self.see('main_sign', screen, source)
+        if not hit:
+            return None
+        if self.home_overlay_open(screen, source):
+            return None
+        return hit
+
+    def home_overlay_open(self, screen=None, source=None) -> bool:
+        """主页上是否盖着喂食/洗澡面板（浮层，会挡住出门等主页按钮）。"""
+        return any(self.see(name, screen, source) for name in HOME_OVERLAY_SIGNS)
 
     def see_all(self, name: str, screen=None):
         """定位 name 的所有命中（OCR 多点），按从上到下排序。"""
@@ -203,9 +242,17 @@ class DeviceScenario:
         checks = max(1, int(getattr(self.cfg.schedule, 'main_page_checks', 1) or 1))
         max_attempts = MAIN_PAGE_ATTEMPTS * checks
         misses = 0
+        self.ensure_game_foreground()
         for attempt in range(1, max_attempts + 1):
             screen, source = self.snapshot()
-            hit = self.see('main_sign', screen, source)
+            if self.home_overlay_open(screen, source):
+                # 喂食/洗澡面板没有自己的返回图标：控件树里的 back 是浮层底下
+                # 主页那个，点它的坐标只会落在浮层上。这里直接按系统返回键关闭。
+                log('喂食/洗澡面板盖在主页上，按系统返回关闭')
+                self.dev.d.press('back')
+                time.sleep(CLICK_INTERVAL)
+                continue
+            hit = self._on_main_page(screen, source)
             if hit:
                 log(f'已在主页面 (score={hit[2]:.2f})')
                 return source
@@ -262,17 +309,18 @@ class DeviceScenario:
         刚进面板时选择框可能还在加载，先重试等第一/三框都出现再归位，
         避免只查一次没查到就抛异常（页面加载慢/点进去还在转场）。
         """
+        # 学园/打工共享选择框缓存，但两个面板的纵坐标不同；每次进入面板
+        # 都从当前控件树重新确认一次，随后仍可在同一面板复用缓存。
+        invalidate_bounds_cache('select_box_container')
         first = third = None
-        source = None
         for attempt in range(1, 4):
-            # select_box_N 由容器 bounds 推导：容器 cache 后秒回，
-            # 未缓存时第一个 see 会 dump 一次并把容器 bounds 缓存，后续秒回
+            # 同一轮共享快照，下一轮必须重新读取，不能在旧控件树上等待加载。
+            if attempt > 1 or source is None:
+                source = self.dev.hierarchy()
             first = self.see('select_box_1', source=source)
             third = self.see('select_box_3', source=source)
             if first and third:
                 break
-            if source is None:
-                source = self.dev.hierarchy()  # 容器未命中：抓一次快照供推导
             if attempt == 1 or attempt == 3:
                 log(f'未定位到选择框，等待加载 ({attempt}/3)')
             time.sleep(CLICK_INTERVAL)
@@ -285,7 +333,7 @@ class DeviceScenario:
                 time.sleep(0.3)
 
     def leave_home(self) -> None:
-        """主页面点击出门（OCR 定位"出门"，识别不到由注册表用参考坐标兜底）。
+        """主页面点击出门（xpath 定位"出门"，找不到直接报错，不做坐标兜底）。
 
         点完检测一次 main_sign（金币胶囊，只有主页面有）：仍识别到 = 还在主页面 =
         点击失败/没生效，重试点击；最多 LEAVE_HOME_ATTEMPTS 次仍失败抛异常，
@@ -298,14 +346,15 @@ class DeviceScenario:
                 log(f'未定位到"出门"按钮（{attempt}/{LEAVE_HOME_ATTEMPTS}）')
             time.sleep(CLICK_INTERVAL)
             # 出门成功 = 主页面标志消失；还在主页面说明没点中/没生效
-            if not self.see('main_sign'):
+            if not self._on_main_page(None, self.dev.hierarchy()):
                 return
             # 页面切换动画可能让 main_sign 短暂残留，多等一轮再判定
             time.sleep(CLICK_INTERVAL)
-            if not self.see('main_sign'):
+            if not self._on_main_page(None, self.dev.hierarchy()):
                 return
             log(f'点击出门后仍在主页面，重试点击出门（{attempt}/{LEAVE_HOME_ATTEMPTS}）')
-        raise RuntimeError(f'点击出门 {LEAVE_HOME_ATTEMPTS} 次后仍停留在主页面')
+        raise RuntimeError(
+            f'{LEAVE_HOME_ATTEMPTS} 次尝试后仍未离开主页面（找不到"出门"按钮或点击无效）')
 
     def wait_end(self, in_name: str, end_name: str, check_interval: float | None = None,
                  encourage: bool = False) -> None:

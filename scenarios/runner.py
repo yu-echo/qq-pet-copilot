@@ -512,6 +512,8 @@ class Runner:
         self.adventure.times_per_day = adv.times_per_day
         self.adventure.skip_bad_weather = adv.skip_bad_weather
         self.adventure.batch = adv.batch
+        self.adventure.duration = str(getattr(adv, 'duration', None)
+                                      or self.adventure.duration)
         start_time = adv.start_time
         if isinstance(start_time, int):
             # YAML 1.1 会把不带引号的 9:00 解析成分钟数 540，转回 HH:MM
@@ -587,7 +589,7 @@ class Runner:
         配置影响，不重启设备）。失败发告警退出（主页都进不去后续任务无从谈起）。'''
         try:
             screen, source = self.school.snapshot()
-            if self.school.see('main_sign', screen, source):
+            if self.school._on_main_page(screen, source):
                 log('启动检查：已在宠物主页面')
                 return
         except Exception as e:

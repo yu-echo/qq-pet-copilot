@@ -99,6 +99,26 @@ class Device:
             return ""
         return proc.stdout.decode("utf-8", "replace").strip()
 
+    def resumed_package(self) -> str:
+        """当前前台应用包名（取不到返回空串）。
+
+        uiautomator2 的 app_current() 在本机的 MIUI 上会返回别的 App（实测
+        屏幕停在 QQ 宠物页时先后返回过 com.tencent.mm / com.deepseek.chat），
+        不能用来判断"脚本是不是还在 QQ 里"。这里直接查系统 resumed activity。
+        """
+        proc = self._run(
+            "shell",
+            "dumpsys activity activities | grep -m1 topResumedActivity",
+            check=False,
+        )
+        if proc.returncode != 0:
+            return ""
+        match = re.search(
+            r"topResumedActivity=ActivityRecord\{\S+ u\d+ ([\w.]+)/",
+            proc.stdout.decode("utf-8", "replace"),
+        )
+        return match.group(1) if match else ""
+
     def screen_size(self) -> tuple[int, int]:
         out = self._run("shell", "wm", "size").stdout.decode("utf-8", "replace")
         # 形如 "Physical size: 1080x2400"

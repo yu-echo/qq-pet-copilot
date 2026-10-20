@@ -6,6 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse, unquote
 from urllib.request import Request, urlopen
 
 
@@ -80,6 +81,32 @@ def _pick_download_url(payload: dict) -> str:
     return candidate
 
 
+def _check_release_page(repo: str, current: str, timeout: float) -> UpdateCheckResult | None:
+    """GitHub API 被限流/不可用时的兜底：读公开 Release 页面跳转地址。
+
+    不需要 token，也不涉及用户数据；API 403/429 或网络异常时仍能拿到
+    最新 tag（v1.41 上游同款做法）。
+    """
+    try:
+        request = Request(f'https://github.com/{repo}/releases/latest',
+                          headers={'User-Agent': 'QQPetCopilot-UpdateChecker'})
+        with urlopen(request, timeout=float(timeout)) as response:
+            url = response.geturl()
+        parsed = urlparse(url)
+        prefix = f'/{repo}/releases/tag/'
+        if parsed.scheme != 'https' or parsed.netloc != 'github.com' or not parsed.path.startswith(prefix):
+            return None
+        tag = unquote(parsed.path[len(prefix):])
+        if not re.fullmatch(r'v?\d+(?:\.\d+)*(?:\+[\w.-]+)?', tag):
+            return None
+        latest = _normalize_version_text(tag)
+        newer = _is_remote_newer(current, latest)
+        return UpdateCheckResult(True, newer, current, latest, tag, url, url,
+                                 '发现新版本' if newer else '当前已是最新版本')
+    except Exception:  # noqa: BLE001 - 兜底失败就按原错误返回
+        return None
+
+
 def check_github_latest_release(repo: str, current_version: str, timeout_seconds: float = 8.0) -> UpdateCheckResult:
     repo_name = str(repo or '').strip()
     current_text = _normalize_version_text(current_version)
@@ -109,6 +136,10 @@ def check_github_latest_release(repo: str, current_version: str, timeout_seconds
         with urlopen(request, timeout=float(timeout_seconds)) as response:
             payload = json.loads(response.read().decode('utf-8', errors='replace'))
     except HTTPError as exc:
+        if exc.code in (403, 429):
+            fallback = _check_release_page(repo_name, current_text, timeout_seconds)
+            if fallback is not None:
+                return fallback
         message = f'检查更新失败：HTTP {exc.code}'
         if exc.code == 403:
             message = '检查更新失败：请求受限（可能触发 GitHub API 限流）'
@@ -123,6 +154,9 @@ def check_github_latest_release(repo: str, current_version: str, timeout_seconds
             message=message,
         )
     except URLError:
+        fallback = _check_release_page(repo_name, current_text, timeout_seconds)
+        if fallback is not None:
+            return fallback
         return UpdateCheckResult(
             ok=False,
             has_update=False,

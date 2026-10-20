@@ -40,6 +40,7 @@ STATUS_ROW_TOL = 40  # 名字右侧同行数字的纵向容差
 STATUS_COL_TOL = 80  # 名字下方同列数字的横向容差
 FEED_RESULT_WAIT = 1.5  # 喂食后等数值刷新的时间（秒）
 FEED_PANEL_RETRIES = 4  # 点 feed 后等喂食面板加载（feed_10 或"兑换食物"出现）的重试次数
+SHOWER_PANEL_RETRIES = 4  # 点 shower 后等洗澡面板加载的重试次数（别把"还没加载完"当"香皂不足"）
 MAX_FEED_ATTEMPTS = 10    # 喂食最多次数，超过认为异常
 EXCHANGE_FOOD_COUNT = 99  # 饼干不足时金币兑换食物的数量（弹窗输入框默认 5）
 EXCHANGE_POPUP_RETRIES = 3  # 等兑换食物弹窗（数量输入框）出现的重试次数
@@ -144,7 +145,12 @@ def nearest_item_count(results: list[tuple[str, int, int, float]],
     """
     best: tuple[float, int] | None = None
     for text, x, y, _ in results:
-        m = re.fullmatch(r'[xX×]?(\d{1,4})', text.replace(' ', ''))
+        normalized = text.replace(' ', '')
+        m = re.fullmatch(r'[xX×]?(\d{1,4})', normalized)
+        if not m and len(normalized) <= 3:
+            # OCR 偶尔把数字认成 'L8' 这类短噪声：只要里面有数字就取出来，
+            # 避免把"认错了"当成"库存为 0"去触发购买（真机误买过 99 个）
+            m = re.search(r'(\d{1,4})', normalized)
         if not m:
             continue
         dist = (x - px) ** 2 + (y - py) ** 2
@@ -380,8 +386,18 @@ class CareScenario(DeviceScenario):
             raise RuntimeError('未找到 shower 洗澡按钮')
         self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
-        source = self.dev.hierarchy()
-        soap = self.see('shower_10', source=source)
+        # 洗澡面板加载有几秒延迟：先等 shower_10 / "购买洗澡道具"出现，
+        # 别把"面板还没加载完"误判成"香皂不足"而直接买 99 个（真机已踩过）
+        soap = None
+        source = None
+        for attempt in range(1, SHOWER_PANEL_RETRIES + 1):
+            self.ensure_game_foreground()
+            source = self.dev.hierarchy()
+            soap = self.see('shower_10', source=source)
+            if soap or self.see('buy_soap', source=source):
+                break
+            log(f'等待洗澡面板加载 ({attempt}/{SHOWER_PANEL_RETRIES})')
+            time.sleep(CLICK_INTERVAL)
         if not soap:
             # 香皂不足：金币购买一次（99 个足够，只买一次防死循环）后重新找
             self._buy_soap(source)
@@ -410,6 +426,9 @@ class CareScenario(DeviceScenario):
             last_clean: int | None = None
             stall = 0  # 清洁连续不提升的回合数
             for attempt in range(1, MAX_SHOWER_ATTEMPTS + 1):
+                # 用户在搓洗期间切到别的 App 时立即停手（finally 会抬手），
+                # 绝不能继续在别的应用上拖拽
+                self.ensure_game_foreground()
                 # 在 (50%, 67%) 和 (50%, 40%) 之间来回拖（截图复测不影响按压）
                 self.scrub_path(*bottom, *top)
                 self.scrub_path(*top, *bottom)

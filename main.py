@@ -359,6 +359,7 @@ TASK_SETTING_FIELDS = [
     ('work.employ_scroll_limit', '雇佣拖动上限', 'int'),
     ('adventure.times_per_day', '每天冒险次数（0 不冒险）', 'int'),
     ('adventure.start_time', '冒险调度时间', 'str'),
+    ('adventure.duration', '冒险时长选择', ['45秒', '2小时']),
     ('adventure.skip_bad_weather', '冒险跳过"天色不对"', 'bool'),
     ('adventure.batch', '单轮冒险次数', 'int'),
     ('visit.times_per_day', '每天踩踩次数（0 不踩）', 'int'),
@@ -507,13 +508,31 @@ def window_is_foreground(window) -> bool:
     return window.isActiveWindow()
 
 
+def _resolve_serial() -> str:
+    """取本次操作的设备序列号：配置为空时按运行器规则选第一台在线设备。
+
+    多设备环境（真机 + 模拟器同时在线）下，scrcpy 不带 -s 会因
+    "Multiple devices connected" 直接退出，镜像窗口永远起不来；
+    这里必须和 U2Device.ensure_connected 用同一套选择规则。
+    """
+    cfg = load_config()
+    serial = str(getattr(cfg.adb, 'device_serial', '') or '').strip()
+    if serial:
+        return serial
+    try:
+        return Device(find_adb(cfg.adb.path), '').ensure_connected()
+    except Exception as e:  # noqa: BLE001 - 设备没连上时交给后续逻辑报错
+        log(f'自动选择设备失败: {e}')
+        return ''
+
+
 def start_scrcpy() -> subprocess.Popen | None:
     """以无边框、关屏、固定标题启动 scrcpy，返回进程。"""
     if not SCRCPY.is_file():
         log(f'未找到 {SCRCPY}，跳过 scrcpy 启动')
         return None
     cmd = [str(SCRCPY)]
-    serial = load_config().adb.device_serial
+    serial = _resolve_serial()
     if serial:  # 指定设备序列号
         cmd += ['-s', serial]
     cmd += ['--no-audio', '--max-size=1024', '--max-fps=15', '--video-bit-rate=2M']
@@ -554,7 +573,7 @@ def start_scrcpy_screen_off() -> subprocess.Popen | None:
         return None
     cmd = [str(SCRCPY), '--turn-screen-off', '--no-video', '--no-audio',
            '--stay-awake', '--no-window']
-    serial = load_config().adb.device_serial
+    serial = _resolve_serial()
     if serial:
         cmd += ['-s', serial]
     # 无头关屏 scrcpy 同样占用监听端口，必须按实例区分（理由见 _scrcpy_port）

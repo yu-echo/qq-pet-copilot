@@ -338,6 +338,10 @@ class U2Device:
                 return None
             e = els[0]
         left, top, right, bottom = e.bounds
+        # 收起/隐藏的节点仍可能留在控件树里（bounds 退化成 0 面积）。
+        # 这种元素不能算"当前页面可见"，否则主页面判定会在洗澡页误命中。
+        if right <= left or bottom <= top:
+            return None
         return int(left), int(top), int(right), int(bottom)
 
     def hierarchy(self):
@@ -352,6 +356,25 @@ class U2Device:
         except Exception as e:
             log(f'控件树快照失败，xpath 将逐个实时查询: {e}')
             return None
+
+    def current_package(self) -> str:
+        """当前前台应用包名；取不到返回空串（不阻断主流程）。
+
+        用于防止用户在运行期间切到别的 App 后，脚本仍在原页面坐标上盲点/盲拖。
+        优先查系统 resumed activity：uiautomator2 的 app_current() 在 MIUI 上
+        会返回与屏幕不符的包名（实测宠物页返回过微信/DeepSeek），据此拦停会误伤。
+        """
+        try:
+            pkg = self.adb.resumed_package()
+            if pkg:
+                return pkg
+        except Exception:  # noqa: BLE001 - 查询失败退回 u2
+            pass
+        try:
+            info = self._u2_op(self.d.app_current)
+            return str((info or {}).get('package') or '')
+        except Exception:  # noqa: BLE001 - 取不到就不做包名校验
+            return ''
 
     # ---- 操控 ----
 

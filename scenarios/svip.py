@@ -40,11 +40,17 @@ OPEN_RECHECK_WAIT = 1.5
 # 等弹窗按钮出现的轮数（标题已出但按钮区可能还在加载）
 STATE_ATTEMPTS = 4
 # ---- 企鹅帽入口的模板匹配（照 src/moneybag.py friend_bag_points 的套路）----
-# 截图统一归一到 1080 宽后，只在右侧图标列这个 ROI 里多尺寸 matchTemplate：
-# 全屏匹配（得分 ~0.6）区分度不够，限定 ROI 后真机得分 0.99 且坐标精确
-ENTRY_ROI = (880, 1040, 200, 560)   # 1080 归一坐标下的 (x1, x2, y1, y2)
+# 截图统一归一到 1080 宽后，只在图标列 ROI 里多尺寸 matchTemplate。
+# 2026-10 新版 QQ 把图标列挪到了屏幕左侧（真机实测帽图标在 x≈120），
+# 旧版在右侧；两个 ROI 都扫，取最高分，避免布局一变就整任务失效。
+ENTRY_ROIS = (
+    (30, 240, 500, 1300),     # 左侧图标列（2026-10 新版）
+    (850, 1050, 200, 1600),   # 右侧图标列（旧版兜底）
+)   # 1080 归一坐标下的 (x1, x2, y1, y2)
 ENTRY_TEMPLATE_SIZES = (52, 58, 64, 70, 76)
-ENTRY_MATCH_SCORE = 0.90            # 低于该分不认（福袋用的是 0.94）
+# 真机实测新版图标得分 0.894（旧阈值 0.90 刚好卡掉）；ROI 内其它图标 <0.72，
+# 0.85 仍有足够区分度
+ENTRY_MATCH_SCORE = 0.85
 
 
 @lru_cache(maxsize=1)
@@ -77,16 +83,21 @@ def find_entry_icon(screen):
     scale = 1080 / w
     gray = cv2.resize(cv2.cvtColor(screen, cv2.COLOR_RGB2GRAY),
                       (1080, round(h * scale)))
-    x1, x2, y1, y2 = ENTRY_ROI
-    x2, y2 = min(x2, gray.shape[1]), min(y2, gray.shape[0])
-    roi = gray[y1:y2, x1:x2]
     best = None
-    for size in ENTRY_TEMPLATE_SIZES:
-        tile = cv2.resize(template, (size, size))
-        _, score, _, point = cv2.minMaxLoc(cv2.matchTemplate(roi, tile, cv2.TM_CCOEFF_NORMED))
-        if score >= ENTRY_MATCH_SCORE and (best is None or score > best[2]):
-            best = (round((x1 + point[0] + size / 2) / scale),
-                    round((y1 + point[1] + size / 2) / scale), float(score))
+    for x1, x2, y1, y2 in ENTRY_ROIS:
+        x2, y2 = min(x2, gray.shape[1]), min(y2, gray.shape[0])
+        if x1 >= x2 or y1 >= y2:
+            continue
+        roi = gray[y1:y2, x1:x2]
+        for size in ENTRY_TEMPLATE_SIZES:
+            tile = cv2.resize(template, (size, size))
+            if tile.shape[0] > roi.shape[0] or tile.shape[1] > roi.shape[1]:
+                continue
+            _, score, _, point = cv2.minMaxLoc(
+                cv2.matchTemplate(roi, tile, cv2.TM_CCOEFF_NORMED))
+            if score >= ENTRY_MATCH_SCORE and (best is None or score > best[2]):
+                best = (round((x1 + point[0] + size / 2) / scale),
+                        round((y1 + point[1] + size / 2) / scale), float(score))
     return best
 
 

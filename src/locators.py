@@ -85,11 +85,14 @@ LOCATORS: dict[str, dict] = {
     'main_sign': {
         'xpath': ['//*[@content-desc="金币胶囊"]']
     },
-    # 主页面"出门"按钮（点击用）：xpath 优先，OCR 文字 + 参考坐标兜底
+    # 主页面"出门"按钮（点击用）：只用 xpath，不给 rel 兜底、也不缓存坐标。
+    # 之前配了 rel (359,1103) 做"必然命中"的点击兜底，结果宠物打工中/喂食洗澡
+    # 面板盖住主页时，"出门"节点根本不在控件树里，却仍按参考坐标盲点
+    # (598,2301)（真机日志 2026-10-19 00:00:44 连点 3 次），既点不中也掩盖了
+    # "当前不是可操作主页"这个事实；cache 同理——缓存只说明"曾经找到过"。
+    # 找不到就让调用方抛异常走恢复。
     'leave_home': {
-        'cache': True,
         'xpath': ['//*[@content-desc="出门"]'],
-        'rel': (359, 1103),
     },
     # 宠物状态面板展开/收起按钮（点击用）：xpath 优先，参考坐标兜底
     'pet_status': {
@@ -123,7 +126,19 @@ LOCATORS: dict[str, dict] = {
         # 锚定"外层 RecyclerView -> FL[1] -> FL[1] -> 内层 RecyclerView[1] -> FL[1]"
         # 的卡片容器，不依赖 ckj 下会随 QQ 更新漂移的深层绝对路径（实测 2026-08-18
         # 打工面板实际是 ckj/.../FrameLayout[3]/RecyclerView[7]/...，旧路径全链失效）。
-        'xpath': [SELECT_BOX_XPATH],
+        'xpath': [
+            SELECT_BOX_XPATH,
+            # 学园 2026-09 的课程面板在内层 RecyclerView 前新增一层
+            # FrameLayout；仅在“去上课”按钮存在时匹配最近的课程列表。
+            '//*[@content-desc="去上课"]/preceding::'
+            'androidx.recyclerview.widget.RecyclerView[1]'
+            '/android.widget.FrameLayout[1]',
+            # 打工面板与学园一样多了一层布局；限定在“去打工”按钮前的
+            # 最近轮播列表，避免误用地图或好友列表的 RecyclerView。
+            '//*[@content-desc="去打工"]/preceding::'
+            'androidx.recyclerview.widget.RecyclerView[1]'
+            '/android.widget.FrameLayout[1]',
+        ],
     },
     # 2:2:1 分割：左 2/5 中心=1/5 宽，中 2/5 中心=3/5 宽，右 1/5 中心=9/10 宽
     'select_box_1': {'from_bounds': 'select_box_container', 'split': (1, 5)},
@@ -193,8 +208,21 @@ LOCATORS: dict[str, dict] = {
         # 不能加 cache：连跑衔接里要靠它判断是否真的进了冒险准备页，
         # 缓存会让 see() 在还没进准备页时也返回旧坐标（误报"已出现 adventure_start"，
         # 随后在出门页面傻点"开始"、adventure_in 永远不出现）
-        'xpath': ['//*[@content-desc="开始"]']},
+        # 2026-10 新版把按钮文案改成了"出发"，两种都认
+        'xpath': ['//*[@content-desc="出发"]',
+                  '//*[@content-desc="开始"]'],
+        'ocr': ['出发', '开始']},
     'adventure_in': {'ocr': ['正在冒险', '冒险中']},
+    # 冒险准备页的两个时长选项：卡片是 canvas 绘制的，控件树里**没有**卡片节点
+    # （只有"简介/消耗/奖励"三行文字随选中项变化），所以选项只能靠 OCR 找。
+    # 默认选"附近走走"（45 秒）：2 小时的"诗和远方"会长时间占住设备。
+    'adventure_short': {'ocr': ['附近走走']},
+    'adventure_long': {'ocr': ['诗和远方']},
+    # 选中态校验：简介文字随当前选中的时长变化，用它确认点击真的切过去了
+    'adventure_short_desc': {
+        'xpath': ['//*[contains(@content-desc, "在附近溜达")]']},
+    'adventure_long_desc': {
+        'xpath': ['//*[contains(@content-desc, "背上行囊去远方")]']},
     'adventure_end': {'xpath': ['//*[@content-desc="分享"]']},
     # 冒险详情框（"天色不对"检测）不再用 xpath 裁剪：游戏更新会改控件层级导致
     # xpath 失效，且实测下半屏整体 OCR 更快——recall_bad_weather 直接 OCR 下半屏
@@ -403,6 +431,11 @@ def locate_cached(name: str) -> tuple[int, int, float] | None:
     给需要"多个定位共享一次控件树 dump"的调用方判断缓存是否齐了用。
     """
     return _locate_cache.get(name)
+
+
+def invalidate_bounds_cache(name: str) -> None:
+    """页面切换后清除一个区域定位的旧坐标，下次从当前控件树确认。"""
+    _bounds_cache.pop(name, None)
 
 
 def see_bounds(dev: U2Device, name: str, source=None) -> tuple[int, int, int, int] | None:

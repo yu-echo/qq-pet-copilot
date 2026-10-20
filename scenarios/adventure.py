@@ -38,6 +38,12 @@ BAD_WEATHER_KEYWORD = '天色不对'
 RECALL_KEYWORD = '召回'
 ADVENTURE_BATCH = 12      # 一轮连跑的冒险次数（跑满后回主页面，供执行器重新判断）
 RECALL_CONFIRM_TRIES = 3  # 点召回后等/重试确认弹窗的次数（不再傻等 10 次）
+# 冒险时长选项：配置值 -> (选项文字定位名, 选中态校验定位名)
+DURATION_OPTIONS = {
+    '45秒': ('adventure_short', 'adventure_short_desc'),
+    '2小时': ('adventure_long', 'adventure_long_desc'),
+}
+DEFAULT_DURATION = '45秒'  # 默认选短的"附近走走"
 
 PROGRESS_FILE = ADVENTURE_PROGRESS_FILE
 
@@ -48,7 +54,13 @@ class AdventureScenario(DeviceScenario):
         self.times_per_day = self.cfg.adventure.times_per_day
         self.skip_bad_weather = self.cfg.adventure.skip_bad_weather
         self.batch = self.cfg.adventure.batch
+        self.duration = str(getattr(self.cfg.adventure, 'duration', DEFAULT_DURATION) or DEFAULT_DURATION)
+        if self.duration not in DURATION_OPTIONS:
+            log(f'冒险时长配置"{self.duration}"无效，按默认 {DEFAULT_DURATION} 处理'
+                f'（可选: {" / ".join(DURATION_OPTIONS)}）')
+            self.duration = DEFAULT_DURATION
         log(f'每天冒险次数: {self.times_per_day if self.times_per_day else "不冒险"}'
+            f'，冒险时长: {self.duration}'
             f'，跳过"天色不对": {"开" if self.skip_bad_weather else "关"}'
             f'，单轮冒险次数 {self.batch}')
 
@@ -77,6 +89,30 @@ class AdventureScenario(DeviceScenario):
             raise
         return None
 
+    def select_duration(self) -> None:
+        """准备页按配置选冒险时长（默认 45 秒的"附近走走"，而不是 2 小时的"诗和远方"）。
+
+        准备页的两张时长卡片是 canvas 绘制的，控件树里没有卡片节点，只有
+        "简介/消耗/奖励"三行文字随选中项变化，所以选项本身靠 OCR 找。
+        点完再读"简介"确认真的切过去了——没切成功就真的会跑 2 小时，
+        宁可报错让调度器重试。
+        """
+        source = self.dev.hierarchy()
+        if not self.see('adventure_start', source=source):
+            return  # 不在准备页，交给调用方的导航逻辑处理
+        option, desc = DURATION_OPTIONS[self.duration]
+        if self.see(desc, source=source):
+            return  # 已经是目标时长（连跑时通常如此），不必重复点
+        hit = self.see(option)
+        if not hit:
+            raise RuntimeError(
+                f'冒险准备页未找到"{self.duration}"选项（{option}），无法按时长开始冒险')
+        self.click(hit[0], hit[1])
+        time.sleep(CLICK_INTERVAL)
+        if not self.see(desc):
+            raise RuntimeError(f'点击"{self.duration}"后简介未变化，冒险时长可能没选中')
+        log(f'冒险时长已选择: {self.duration}')
+
     def do_adventure(self) -> bool:
         """准备页面 -> 开始冒险 -> 等待 adventure_end -> 点 quit 退出。
         开关开启时开始后先检测"天色不对"：命中则召回并确认，不再等冒险结束
@@ -85,6 +121,7 @@ class AdventureScenario(DeviceScenario):
         调度器 finish_pending 收尾计数；召回同步完成则立即 count_cross 计数。
         返回 True 表示走了"天色不对"召回（召回成功后回到主页面，不是"出门"页，
         调用方应回主页面重进而不是直接点冒险入口）。"""
+        self.select_duration()
         self.click_until_gone_or_see('adventure_start', 'adventure_in', '开始冒险')
         if self.skip_bad_weather and self.recall_bad_weather():
             if self.defer_wait:
@@ -202,7 +239,7 @@ class AdventureScenario(DeviceScenario):
             # 入口会在主页面空点 10 次（历史教训见 15:07 日志）
             skip_home = (getattr(self, '_after_pending_go_out_at', 0)
                          and time.monotonic() - self._after_pending_go_out_at < 10
-                         and not self.see('main_sign'))
+                         and not self._on_main_page())
             self._after_pending_go_out_at = 0
             if skip_home:
                 log('收尾点完 quit 已在出门页面，直接点冒险入口')
@@ -257,7 +294,7 @@ class AdventureScenario(DeviceScenario):
                         # 召回成功后实测停在"出门"页（main_sign 识别不到），不是主页面：
                         # 出门页直接点冒险入口，省一次 back + 出门；只有真的在主页面
                         # （家里）才回家重进
-                        if self.see('main_sign'):
+                        if self._on_main_page():
                             log('召回后已在主页面，回主页面重新进入冒险')
                             self.ensure_main_page()
                             finished = self.goto_adventure()
