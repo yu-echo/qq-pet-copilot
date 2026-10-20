@@ -25,18 +25,15 @@
 - 踩踩/PK：到达各自 start_time 且当天次数未满时，在主页面处理；
   PK 每轮最多 16 局（超出下一轮接着跑），开始前检查体力/清洁
   （每局各耗 5，不足则喂食/洗澡到 90）
-- 好友护理：friend_care.enabled 开启且配置了好友名称时，在 friend_care.time_range
-  时间段内按 friend_care.interval_seconds 间隔调度：每次访问该好友家按
-  friend_care.method 护理一次（单次巡检，不再场景内切换好友刷新状态）后回主页面
-  （scenarios/friend_care.py）
-- 好友雇佣：hire_friend.enabled 开启且配置了好友名称时，在 hire_friend.time_range
-  时间段内按 hire_friend.interval_seconds 间隔调度且当天次数未满
-  （hire_friend.times_per_day）时访问该好友家，OCR hire 按钮上的
-  雇佣剩余 CD，有 CD 抛 TaskDeferred 延后 60 秒复测（不原地等待），
-  没有 CD 点 hire 进打工面板（固定等 3 秒加载，重试点击），
-  按打工流程 select_place 确认/重选打工地点后按 work.duration 选工作选择框
-  （10分钟/45分钟/2小时 -> select_box_1/2/3）点 work_start
-  打工一轮；打工结束后计数（雇佣好友 + 打工各一次）（scenarios/hire_friend.py）
+- 好友护理（与经验日常合并）：friend_care.enabled 开启时，全天按
+  friend_care.interval_seconds 间隔调度：访问第一个好友家，检测到照顾区域
+  有 exp/经验就点一键护理加经验，没有则视为当日经验日常完成（scenarios/friend_care.py）
+- 好友雇佣：hire_friend.enabled 开启时，打工时每次都雇佣（不限次数/间隔/
+  好友名称，自动选择第一个好友），OCR hire 按钮上的雇佣剩余 CD，有 CD 抛
+  TaskDeferred 延后 60 秒复测（不原地等待），没有 CD 点 hire 进打工面板
+  （固定等 3 秒加载，重试点击），按打工流程 select_place 确认/重选打工地点后按
+  work.duration 选工作选择框（10分钟/45分钟/2小时 -> select_box_1/2/3）点
+  work_start 打工一轮；打工结束后计数（雇佣好友 + 打工各一次）（scenarios/hire_friend.py）
 - 异常分级重试：场景执行抛异常 -> 先回主页面重进场景重试一次（页面状态
   错乱多半能自愈，不必重启）-> 仍失败才 adb reboot 重启设备 -> 启动 QQ ->
   点 Q宠-* 入口回宠物页面（src/recover.py）-> 最后再试一次；
@@ -78,7 +75,6 @@ from src.notify import send_alert
 from src.ocr import get_engine
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
-    HIRE_FRIEND_PROGRESS_FILE,
     PK_PROGRESS_FILE,
     SCHOOL_PROGRESS_FILE,
     VISIT_PROGRESS_FILE,
@@ -100,7 +96,7 @@ from PIL import Image
 from scenarios.adventure import AdventureScenario
 from scenarios.care import CareScenario
 from scenarios.employed import EmployedScenario
-from scenarios.friend_care import FriendCareScenario, in_time_range, parse_time_range
+from scenarios.friend_care import FriendCareScenario
 from scenarios.hire_friend import FriendHireScenario
 from scenarios.pk import PKDeferred, PKScenario
 from scenarios.school import ATTRIBUTE_COURSES, SchoolScenario
@@ -161,9 +157,6 @@ class Runner:
         self.pk_dead = False     # PK 今天不再可用（执行失败）
         self.friend_care_dead = False  # 好友护理今天不再可用（执行失败）
         self.hire_friend_dead = False  # 好友雇佣今天不再可用（执行失败）
-        self._fc_bad_range_logged = False  # 时间段格式错误只记一次日志（due() 每轮都调）
-        self._hf_bad_time_logged = False   # 雇佣好友时间格式错误只记一次日志（同上）
-        self._ec_bad_range_logged = False  # 被雇佣时间段格式错误只记一次日志（同上）
         self._employed_last_check = None   # 上次被雇佣检查时间（interval_seconds 起算点）
         sched = self.school.cfg.schedule
         self.threshold = sched.coin_threshold
@@ -206,12 +199,11 @@ class Runner:
         return datetime.now().time() >= self.adventure_start
 
     def visit_due(self) -> bool:
-        """是否该踩踩了：已到调度时间、当天次数未满且不在失败延后期；
-        或踩满但经验日常未完成（需继续遍历好友做经验照顾）。"""
+        """是否该踩踩了：已到调度时间、当天次数未满且不在失败延后期。"""
         if not self.visit_times or self._deferred('踩踩'):
             return False
         _, done, _ = load_progress(VISIT_PROGRESS_FILE, quiet=True)
-        if done >= self.visit_times and exp_daily_done():
+        if done >= self.visit_times:
             return False
         return datetime.now().time() >= self.visit_start
 
@@ -231,35 +223,26 @@ class Runner:
         return last is None or datetime.now() >= last + timedelta(seconds=interval)
 
     def friend_care_due(self) -> bool:
-        """是否该好友护理了：已启用、配置了好友名称、距上次巡检已过
+        """是否该好友护理了：已启用、当日经验日常未完成、距上次巡检已过
         friend_care.interval_seconds 且不在失败延后期（全天可跑，无时间段限制）。"""
         fc = self.friend_care.cfg.friend_care
-        if not fc.enabled or not fc.friend_name.strip() or self._deferred('好友护理'):
+        if not fc.enabled or self._deferred('好友护理') or exp_daily_done():
             return False
         last = getattr(self.friend_care, 'last_care_at', None)
         interval = max(0, int(getattr(fc, 'interval_seconds', 1800) or 0))
         return last is None or datetime.now() >= last + timedelta(seconds=interval)
 
     def hire_friend_due(self) -> bool:
-        """是否该雇佣好友了：已启用、配置了好友名称、当天次数未满、
-        距上次执行已过 hire_friend.interval_seconds 且不在失败延后期
-        （全天可跑，无时间段限制）。
+        """是否该雇佣好友了：已启用且不在失败延后期（全天可跑，不限次数/间隔，
+        打工时每次都雇佣；雇佣 CD 未到由场景抛 TaskDeferred 延后，不原地等待）。
         纯查询无副作用：last_hire_at 由执行处记录——本方法每轮会被主任务组内
         多个任务的扫描重复调用（_main_choice），在判定里记时间会把雇佣卡死。"""
         hf = self.hire_friend.cfg.hire_friend
-        if (not hf.enabled or not hf.times_per_day or not hf.friend_name.strip()
-                or self._deferred('雇佣好友')):
-            return False
-        _, done, _ = load_progress(HIRE_FRIEND_PROGRESS_FILE, quiet=True)
-        if done >= hf.times_per_day:
-            return False
-        last = getattr(self.hire_friend, 'last_hire_at', None)
-        interval = max(1, int(getattr(hf, 'interval_seconds', 5) or 5))
-        return last is None or datetime.now() >= last + timedelta(seconds=interval)
+        return hf.enabled and not self._deferred('雇佣好友')
 
     def employed_due(self) -> bool:
-        """是否该被雇佣检查了：已启用、当前在被雇佣时间段内、
-        距上次检查已过 employed.interval_seconds 且不在失败延后期。"""
+        """是否该被雇佣检查了：已启用、距上次检查已过 employed.interval_seconds
+        且不在失败延后期（全天检查，无时间段限制）。"""
         ec = self.school.cfg.employed
         if not ec.enabled or self._deferred('被雇佣'):
             return False
@@ -267,27 +250,7 @@ class Runner:
         interval = max(1, int(getattr(ec, 'interval_seconds', 60) or 60))
         if last is not None and datetime.now() < last + timedelta(seconds=interval):
             return False
-        try:
-            start, end = parse_time_range(ec.time_range, 'employed.time_range')
-        except ValueError as e:
-            if not self._ec_bad_range_logged:
-                log(f'{e}，被雇佣检查不调度')
-                self._ec_bad_range_logged = True
-            return False
-        self._ec_bad_range_logged = False
-        return in_time_range(datetime.now().time(), start, end)
-
-    def employed_window_active(self) -> bool:
-        """被雇佣时间段是否生效中（开关打开且当前在时间段内）：
-        生效期间主任务（冒险/学习/打工/雇佣好友）不触发。"""
-        ec = self.school.cfg.employed
-        if not ec.enabled:
-            return False
-        try:
-            start, end = parse_time_range(ec.time_range, 'employed.time_range')
-        except ValueError:
-            return False
-        return in_time_range(datetime.now().time(), start, end)
+        return True
 
     def today_durations(self) -> tuple[int, int]:
         """当天已累计 (学习秒, 打工秒)；首次运行自动迁移老次数。"""
@@ -469,7 +432,7 @@ class Runner:
             # 被雇佣配置整体替换（开关/时间段/检查间隔/处理方式下一轮即生效）
             scen.cfg.employed = cfg.employed
             scen.cfg.recover.method = cfg.recover.method
-        # 好友护理/好友雇佣配置整体替换（启用开关/时间段/好友名称/方式/次数下一轮即生效）
+        # 好友护理/好友雇佣配置整体替换（启用开关/间隔下一轮即生效）
         self.friend_care.cfg.friend_care = cfg.friend_care
         self.hire_friend.cfg.hire_friend = cfg.hire_friend
 
@@ -479,7 +442,6 @@ class Runner:
         # （否则 _run_round 跑 adventure 时日志/内部上限还是旧值）
         self.adventure.times_per_day = adv.times_per_day
         self.adventure.skip_bad_weather = adv.skip_bad_weather
-        self.adventure.batch = adv.batch
         self.adventure.duration = str(getattr(adv, 'duration', None)
                                       or self.adventure.duration)
         start_time = adv.start_time
@@ -610,9 +572,6 @@ class Runner:
 
                 self._try_moneybags()
 
-                # 被雇佣时间段内主任务（冒险/学习/打工/雇佣好友）不触发
-                suppress_main = self.employed_window_active()
-
                 # 被雇佣检查：到达检查间隔出门看是否被雇佣中，是则按配置召回
                 if self.employed_due():
                     log('到达被雇佣检查时间，出门检查是否被雇佣中')
@@ -630,7 +589,7 @@ class Runner:
                     continue
 
                 # 冒险优先：到达调度时间且当天次数未满
-                if not suppress_main and not adventure_dead and self.adventure_due():
+                if not adventure_dead and self.adventure_due():
                     log('到达冒险调度时间，优先处理冒险')
                     try:
                         done = self.run_one(self.adventure, '冒险', fatal=False)
@@ -684,9 +643,9 @@ class Runner:
                         self.pk_dead = True
                         log('PK 当天不可继续')
 
-                # 好友雇佣：到达调度时间且当天次数未满（雇佣 CD 未到时场景抛
+                # 好友雇佣：全天可跑，不限次数（雇佣 CD 未到时场景抛
                 # TaskDeferred 延后 60 秒复测，不原地等待）
-                if not suppress_main and not self.hire_friend_dead and self.hire_friend_due():
+                if not self.hire_friend_dead and self.hire_friend_due():
                     log('到达雇佣好友调度时间，处理好友雇佣')
                     self.hire_friend.last_hire_at = datetime.now()  # 调度间隔从实际执行起算
                     try:
@@ -732,13 +691,6 @@ class Runner:
                             continue
                         self.friend_care_dead = True
                         log('好友护理当天不可继续')
-
-                if suppress_main:
-                    # 被雇佣时间段内主任务（学习/打工）不触发：睡到下次被雇佣检查
-                    # （醒来到点由循环顶部的被雇佣检查处理，支线任务下轮仍可调度）
-                    ec = self.school.cfg.employed
-                    time.sleep(max(1, int(getattr(ec, 'interval_seconds', 60) or 60)))
-                    continue
 
                 study_s, work_s = self._load_durations()
                 log(f'今日时长: 已学习 {study_s // 60} 分钟 + 已打工 {work_s // 60} 分钟')
@@ -869,10 +821,9 @@ class TaskQueueRunner(Runner):
     - 没有任务可执行时睡到最近的等待点（退避/每日窗口/pending 收尾时间，上限
       QUEUE_POLL_INTERVAL 轮询，顺带热加载配置）；主任务组当天结束后只等支线任务的
       失败退避，没有则退出调度器；
-    - 被雇佣检查（employed.enabled 开启时）不在 tasks.order 里：被雇佣时间段内
-      按 employed.interval_seconds 间隔优先于队列任务出门检查，被雇佣中则按
-      employed.action 召回；被雇佣时间段内主任务组不触发（_main_choice 返回 None，
-      pending 收尾不受影响）。
+    - 被雇佣检查（employed.enabled 开启时）不在 tasks.order 里：全天按
+      employed.interval_seconds 间隔优先于队列任务出门检查，被雇佣中则按
+      employed.action 召回。
     """
 
     def __init__(self, *args, **kwargs):
@@ -1106,8 +1057,6 @@ class TaskQueueRunner(Runner):
             if not pend.finish_pending():
                 return None  # 尚未结束（已重估收尾时间），本轮继续等
             # 收尾完成（已计数），本轮继续选择下一个主任务
-        if self.employed_window_active():
-            return None  # 被雇佣时间段内主任务不触发
         now = datetime.now()
         for key in self._main_order:
             task = tasks.get(key)
@@ -1414,15 +1363,9 @@ class TaskQueueRunner(Runner):
         return done >= self.adventure_times
 
     def _hire_friend_done(self, tasks: dict) -> bool:
-        """雇佣好友今天是否已结束：不可继续 / 未启用或未配置 / 当天次数已满。
-        只看配额不看 start_time——主任务没结束就不退出调度器，等雇佣到点。"""
-        if self._dead(tasks, 'hire_friend'):
-            return True
-        hf = self.hire_friend.cfg.hire_friend
-        if not hf.enabled or not hf.times_per_day or not hf.friend_name.strip():
-            return True
-        _, done, _ = load_progress(HIRE_FRIEND_PROGRESS_FILE, quiet=True)
-        return done >= hf.times_per_day
+        """雇佣好友今天是否已结束：不限次数/间隔，只有执行失败（dead）才视为
+        当天不可继续——打工时每次都雇佣，不因配额结束。"""
+        return self._dead(tasks, 'hire_friend')
 
     def _main_finished(self, tasks: dict) -> bool:
         """主任务组（冒险/学习/打工/雇佣好友）今天是否已全部结束：

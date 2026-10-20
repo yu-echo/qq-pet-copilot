@@ -369,7 +369,7 @@ class FullRegression(unittest.TestCase):
     def test_adventure_normal_and_bad_weather_paths(self):
         for recall in (False,True):
             sc=AdventureScenario.__new__(AdventureScenario)
-            sc.skip_bad_weather=True; sc.defer_wait=True
+            sc.skip_bad_weather=True; sc.defer_wait=True; sc.duration='45秒'
             sc.click_until_gone_or_see=Mock(); sc.recall_bad_weather=Mock(return_value=recall)
             sc.select_duration=Mock()  # 时长选择单独用例覆盖，这里只测正常/召回两条路径
             sc.defer_busy_end=Mock(); sc.ensure_main_page=Mock()
@@ -377,6 +377,17 @@ class FullRegression(unittest.TestCase):
                 self.assertEqual(sc.do_adventure(),recall)
                 self.assertEqual(count.call_count,int(recall))
                 self.assertEqual(sc.defer_busy_end.call_count,int(not recall))
+
+    def test_adventure_two_hour_skips_bad_weather(self):
+        # 2 小时冒险不触发"天色不对"召回：即使开关打开也不召回
+        sc=AdventureScenario.__new__(AdventureScenario)
+        sc.skip_bad_weather=True; sc.defer_wait=True; sc.duration='2小时'
+        sc.click_until_gone_or_see=Mock(); sc.recall_bad_weather=Mock()
+        sc.select_duration=Mock(); sc.defer_busy_end=Mock(); sc.ensure_main_page=Mock()
+        with patch('scenarios.adventure.count_cross') as count:
+            self.assertFalse(sc.do_adventure())
+        sc.recall_bad_weather.assert_not_called()
+        count.assert_not_called()
 
     def test_visit_already_and_available(self):
         for done in (True,False):
@@ -616,24 +627,41 @@ class FullRegression(unittest.TestCase):
         self.assertEqual(PKScenario._round_limit(0,4),4+PK_ROUND_CAP)
         self.assertLessEqual(PKScenario._round_limit(100,0),PK_ROUND_CAP)
 
-    def test_friend_care_healthy_does_not_spend_items(self):
-        sc=FriendCareScenario.__new__(FriendCareScenario); sc.method='ocr检测'
+    def test_friend_care_exp_daily_one_click(self):
+        """好友护理=经验日常：照顾区域有 exp 就点一键护理（不计完成）。"""
+        sc=FriendCareScenario.__new__(FriendCareScenario)
         sc.dev=NS(hierarchy=lambda:None)
-        care=Mock(); care.read_status_ready.return_value={'体力':99,'清洁':95}
-        with patch('scenarios.friend_care._FriendCare',return_value=care):
-            self.assertFalse(sc.care_friend())
-        care.feed.assert_not_called(); care.shower.assert_not_called()
-        self.assertEqual(care.set_status_expanded.call_args_list[0].args[0],True)
-        self.assertEqual(care.set_status_expanded.call_args_list[-1].args[0],False)
+        sc.screen=Mock(return_value=np.zeros((100,100,3),dtype=np.uint8)); sc.click=Mock()
+        sc.see=lambda key,**kw: (10,20,1) if key in ('one_click_care','one_click_pay') else None
+        with patch('scenarios.friend_care.see_bounds',return_value=(0,0,100,100)), \
+             patch('scenarios.friend_care.ocr_texts',return_value=[('exp 100',0,0,1)]), \
+             patch('scenarios.friend_care.time.sleep'), \
+             patch('scenarios.friend_care.save_exp_daily') as save:
+            self.assertTrue(sc._try_exp_daily())
+        save.assert_not_called()
+        self.assertGreaterEqual(sc.click.call_count,1)
+
+    def test_friend_care_exp_daily_done_when_no_exp(self):
+        """照顾区域无 exp：标记经验日常完成，不点护理。"""
+        sc=FriendCareScenario.__new__(FriendCareScenario)
+        sc.dev=NS(hierarchy=lambda:None)
+        sc.screen=Mock(return_value=np.zeros((100,100,3),dtype=np.uint8)); sc.click=Mock()
+        sc.see=lambda key,**kw: (10,20,1) if key=='one_click_care' else None
+        with patch('scenarios.friend_care.see_bounds',return_value=(0,0,100,100)), \
+             patch('scenarios.friend_care.ocr_texts',return_value=[('体力 90',0,0,1)]), \
+             patch('scenarios.friend_care.save_exp_daily') as save:
+            self.assertFalse(sc._try_exp_daily())
+        save.assert_called_once_with(True)
+        sc.click.assert_not_called()
 
     def test_friend_hire_busy_defers_without_visiting(self):
         sc=FriendHireScenario.__new__(FriendHireScenario)
-        sc.cfg=NS(hire_friend=NS(enabled=True,friend_name='测试',times_per_day=8))
+        sc.cfg=NS(hire_friend=NS(enabled=True))
         sc.ensure_main_page=Mock(); sc.detect_busy_remaining=Mock(return_value=('work',600))
-        sc.goto_friend_home=Mock()
-        with patch('scenarios.hire_friend.load_progress',return_value=('2026-09-08',0,{})),self.assertRaises(TaskDeferred):
+        sc.goto_first_friend=Mock()
+        with self.assertRaises(TaskDeferred):
             sc.run(max_rounds=1)
-        sc.goto_friend_home.assert_not_called()
+        sc.goto_first_friend.assert_not_called()
 
     def test_employed_recall_policy(self):
         for ready in (False,True):

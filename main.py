@@ -96,7 +96,6 @@ from src.config import (
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
     EMPLOYED_PROGRESS_FILE,
-    HIRE_FRIEND_PROGRESS_FILE,
     PK_PROGRESS_FILE,
     SCHOOL_PROGRESS_FILE,
     VISIT_PROGRESS_FILE,
@@ -353,15 +352,11 @@ SETTING_FIELDS = [
 # 任务选项卡字段：任务队列顺序 + 各场景任务相关设置
 TASK_SETTING_FIELDS = [
     # 计划表已经覆盖：tasks.order / main_order / school / work / adventure 的次数与参数；
-    # 时长上限、鼓励次数、护理方式已删除或挪进「活动与护理」卡（2026-10-20）
-    ('adventure.skip_bad_weather', '冒险跳过"天色不对"', 'bool'),
-    ('adventure.batch', '单轮冒险次数', 'int'),
-    ('friend_care.friend_name', '护理好友名称', 'str'),
-    ('friend_care.method', '护理好友方式', ['一键护理', 'ocr检测']),
-    ('hire_friend.friend_name', '雇佣好友名称', 'str'),
+    # 时长上限、鼓励次数、护理方式已删除或挪进「活动与护理」卡（2026-10-20）。
+    # 被雇佣/好友护理/雇佣好友 的时间段、名称、次数/间隔已按全天化/自动化移除。
+    ('adventure.skip_bad_weather', '冒险跳过"天色不对"（仅45秒）', 'bool'),
     ('employed.enabled', '被雇佣开关', 'bool'),
     ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
-    ('employed.time_range', '被雇佣时间段', 'str'),
     ('employed.interval_seconds', '被雇佣检查间隔（秒）', 'int'),
 ]
 
@@ -1547,7 +1542,7 @@ class MainWindow(MSFluentWindow):
                 _, done, _ = load_progress(progress_file, quiet=True)
                 values[label] = f'{done}/{limit}' if limit else str(done)
                 if label == '踩踩':
-                    # 经验日常（好友照顾）当日是否完成：踩踩次数满但经验未完成时仍会继续
+                    # 经验日常（好友护理合并项）当日是否完成
                     _, exp_done, _ = load_exp_daily(quiet=True)
                     values['经验日常'] = '✓' if exp_done else '✗'
             for key, text in values.items():
@@ -1608,23 +1603,23 @@ class MainWindow(MSFluentWindow):
         layout.setContentsMargins(0, 0, 10, 0)
         layout.setSpacing(10)
         layout.addWidget(self._build_plan_overview_card())
-        layout.addWidget(self._build_plan_list_card())
-        layout.addWidget(self._build_plan_side_cards())
-        layout.addWidget(self._build_visit_pk_card())
-        layout.addWidget(self._build_plan_activity_card())
-        layout.addWidget(self._build_plan_stats_card())
-        # 原来「任务」页的参数（全局规则/冒险细节/护理与好友参数）并到这里，
-        # 计划表覆盖不到的部分不再单独占一个导航页
-        layout.addWidget(StrongBodyLabel('更多设置'))
-        layout.addWidget(self._build_settings_form(TASK_SETTING_FIELDS)[0])
-        # 照参考页收尾：运行状态条 + 通栏保存按钮
-        layout.addWidget(self._build_plan_run_panel())
+        # 保存按钮放最上方醒目位置（底部运行状态条已删除）
         self._plan_saved_hint = CaptionLabel('')
         layout.addWidget(self._plan_saved_hint)
         btn_save = PrimaryPushButton('保存配置')
         btn_save.setFixedHeight(42)
         btn_save.clicked.connect(lambda: self._persist_plan(manual=True))
         layout.addWidget(btn_save)
+        # 踩一踩 / PK 放在计划表前面
+        layout.addWidget(self._build_visit_pk_card())
+        layout.addWidget(self._build_plan_list_card())
+        layout.addWidget(self._build_plan_side_cards())
+        layout.addWidget(self._build_plan_activity_card())
+        layout.addWidget(self._build_plan_stats_card())
+        # 原来「任务」页的参数（全局规则/冒险细节/护理与好友参数）并到这里，
+        # 计划表覆盖不到的部分不再单独占一个导航页
+        layout.addWidget(StrongBodyLabel('更多设置'))
+        layout.addWidget(self._build_settings_form(TASK_SETTING_FIELDS)[0])
         layout.addStretch(1)
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)
@@ -1934,21 +1929,6 @@ class MainWindow(MSFluentWindow):
         self._care_stock_labels[kind] = (stock_label, unit)
         return panel
 
-    def _build_plan_run_panel(self) -> QWidget:
-        """底部运行状态条：一行小标题 + 当前状态（每秒刷新）。"""
-        panel = QWidget()
-        panel.setObjectName('planRunPanel')
-        panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        panel.setStyleSheet(f'QWidget#planRunPanel {{ background: {self._panel_background()};'
-                            ' border-radius: 10px; }')
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(2)
-        lay.addWidget(CaptionLabel('运行状态'))
-        self._plan_run_state = StrongBodyLabel('未启动自动控制')
-        lay.addWidget(self._plan_run_state)
-        return panel
-
     def _rebuild_plan_rows(self) -> None:
         """重建计划行（活动/模式变化时控件结构不同，只能整行重建）。"""
         lay = self._plan_rows_layout
@@ -2181,10 +2161,11 @@ class MainWindow(MSFluentWindow):
             self._build_plan_task_card('svip', 'SVIP 礼包',
                                        '每次启动领取一次，无会员/领取失败自动跳过'),
             self._build_moneybag_card(),
-            self._build_plan_task_card('friend_care', '好友护理', '按间隔巡检好友宠物（全天）',
+            self._build_plan_task_card('friend_care', '好友护理',
+                                       '全天按间隔检查，检测到可加经验就一键护理',
                                        interval=True),
-            self._build_plan_task_card('hire_friend', '雇佣好友', '按间隔雇佣好友打工（全天）',
-                                       interval=True, count=True),
+            self._build_plan_task_card('hire_friend', '雇佣好友',
+                                       '打工时每次都雇佣第一个好友'),
         ]
         # 两列：卡片本身有最小宽度，三列在默认窗口（约 1200 逻辑宽）下会被挤到窗口外
         for i, widget in enumerate(cards):
@@ -2458,15 +2439,6 @@ class MainWindow(MSFluentWindow):
             self._plan_current_value.setText('暂无任务')
             self._plan_current_hint.setText('暂无进行中的活动')
 
-        # 底部运行状态条：一句话说清现在在干什么
-        if hasattr(self, '_plan_run_state'):
-            if running:
-                current = str(st.get('current') or '').strip()
-                self._plan_run_state.setText(f'自动控制运行中 · {current}' if current
-                                             else '自动控制运行中')
-            else:
-                self._plan_run_state.setText('未启动自动控制')
-
         # 喂食/洗护卡片的库存（护理流程 OCR 写完缓存后这里跟着变）
         for kind, (label, unit) in getattr(self, '_care_stock_labels', {}).items():
             value = self._care_stock('biscuit' if kind == 'feed' else 'soap')
@@ -2633,14 +2605,11 @@ class MainWindow(MSFluentWindow):
                 return '现在可执行'
             return self._fmt_next_dt(start_dt, now)
         if key == 'hire_friend':
-            hf = cfg.hire_friend
-            if not hf.enabled or not (hf.friend_name or '').strip() or not hf.times_per_day:
+            if not cfg.hire_friend.enabled:
                 return '—'
-            _, done, _ = load_progress(HIRE_FRIEND_PROGRESS_FILE, quiet=True)
-            return '—' if done >= hf.times_per_day else '现在可执行'
+            return '现在可执行'
         if key == 'friend_care':
-            fc = cfg.friend_care
-            if not fc.enabled or not (fc.friend_name or '').strip():
+            if not cfg.friend_care.enabled:
                 return '—'
             return '现在可执行'
         if key in ('school', 'work'):

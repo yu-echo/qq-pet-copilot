@@ -6,11 +6,10 @@
    -> 等待结束并退出，回主页面结束本轮
 3. 点击 adventure 进入准备页面，直到出现 adventure_start 按钮
 4. 点击 adventure_start 开始冒险，直到出现 adventure_in 标志；
-   配置 adventure.skip_bad_weather 开启时，开始 5 秒后 OCR 下半屏（冒险详情框）：
-   含"天色不对"则点"召回"->"确认召回"，计入一次冒险，不再等冒险结束
+   配置 adventure.skip_bad_weather 开启时（仅 45 秒冒险），开始 5 秒后 OCR 下半屏
+   （冒险详情框）：含"天色不对"则点"召回"->"确认召回"，计入一次冒险，不再等冒险结束
 5. 冒险中按配置的检查间隔（schedule.check_interval）检查，直到出现 adventure_end 标志
-6. 一轮连跑 ADVENTURE_BATCH（默认 12）次冒险，期间不回主页面；
-   跑满（或达当天上限）后回主页面，交由执行器重新判断
+6. 每轮只跑一次冒险（每日次数由计划表接管），跑完回主页面，交由执行器重新判断
 
 运行：python scenarios/adventure.py            （Ctrl+C 停止）
       python scenarios/adventure.py --times 5  （冒满 5 次自动结束，0 为不限）
@@ -36,7 +35,6 @@ from src.scenario import CLICK_INTERVAL, DeviceScenario
 BAD_WEATHER_WAIT = 5.0    # 开始冒险后等冒险详情框加载的时间（秒）
 BAD_WEATHER_KEYWORD = '天色不对'
 RECALL_KEYWORD = '召回'
-ADVENTURE_BATCH = 12      # 一轮连跑的冒险次数（跑满后回主页面，供执行器重新判断）
 RECALL_CONFIRM_TRIES = 3  # 点召回后等/重试确认弹窗的次数（不再傻等 10 次）
 # 冒险时长选项：配置值 -> (选项文字定位名, 选中态校验定位名)
 DURATION_OPTIONS = {
@@ -53,7 +51,6 @@ class AdventureScenario(DeviceScenario):
         super().__init__(dev)
         self.times_per_day = self.cfg.adventure.times_per_day
         self.skip_bad_weather = self.cfg.adventure.skip_bad_weather
-        self.batch = self.cfg.adventure.batch
         self.duration = str(getattr(self.cfg.adventure, 'duration', DEFAULT_DURATION) or DEFAULT_DURATION)
         if self.duration not in DURATION_OPTIONS:
             log(f'冒险时长配置"{self.duration}"无效，按默认 {DEFAULT_DURATION} 处理'
@@ -61,8 +58,7 @@ class AdventureScenario(DeviceScenario):
             self.duration = DEFAULT_DURATION
         log(f'每天冒险次数: {self.times_per_day if self.times_per_day else "不冒险"}'
             f'，冒险时长: {self.duration}'
-            f'，跳过"天色不对": {"开" if self.skip_bad_weather else "关"}'
-            f'，单轮冒险次数 {self.batch}')
+            f'，跳过"天色不对": {"开（仅45秒）" if self.skip_bad_weather else "关"}')
 
     # ---- 各阶段 ----
 
@@ -123,7 +119,7 @@ class AdventureScenario(DeviceScenario):
         调用方应回主页面重进而不是直接点冒险入口）。"""
         self.select_duration()
         self.click_until_gone_or_see('adventure_start', 'adventure_in', '开始冒险')
-        if self.skip_bad_weather and self.recall_bad_weather():
+        if self.skip_bad_weather and self.duration == '45秒' and self.recall_bad_weather():
             if self.defer_wait:
                 # 召回即同步完成：立即计数（计数统一走 count_cross，
                 # 由 run() 刷新本地计数判断上限）
@@ -193,21 +189,14 @@ class AdventureScenario(DeviceScenario):
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError('点击召回后未出现"确认召回"按钮')
 
-    def run(self, max_times: int | None = None, max_rounds: int = 0,
-            batch: int | None = None) -> bool:
+    def run(self, max_times: int | None = None, max_rounds: int = 0) -> bool:
         """max_times: 当天冒险次数上限，0 表示不限；None 表示用配置值。
-        max_rounds: 最多跑多少轮后返回，0 为不限。一轮 = 连跑 batch 次冒险，
-        跑满（或达当天上限）后回主页面（供执行器逐次调度）。
-        batch: 一轮连跑的冒险次数，默认取配置 adventure.batch（默认 12）；
-        连续冒险之间不回主页面——quit 后落在"出门"页面，直接点冒险入口进
-        准备页开下一把；点不到（被弹回主页面/处于进行中状态）则回主页面
-        重进再继续本批。
-        返回本次调用是否完成了至少一次冒险。
+        max_rounds: 最多跑多少轮后返回，0 为不限。每轮只跑一次冒险
+        （单轮连跑次数已废弃，每日次数由计划表接管），跑完回主页面
+        （供执行器逐次调度）。返回本次调用是否完成了至少一次冒险。
         """
         if max_times is None:
             max_times = self.times_per_day
-        if batch is None:
-            batch = getattr(self, 'batch', ADVENTURE_BATCH)
         today, done, history = load_progress(PROGRESS_FILE)
         log_history(history, today)
         start_done = done
@@ -231,7 +220,7 @@ class AdventureScenario(DeviceScenario):
         round_no = 0
         while True:
             round_no += 1
-            log(f'===== 第 {round_no} 轮（连跑 {batch} 次冒险）=====')
+            log(f'===== 第 {round_no} 轮 =====')
             # 刚收尾完（finish_pending 点 quit 已落在"出门"页）且中间没跑过别的
             # 任务（时间窗内）：直接点冒险入口，省一次 back + 出门。
             # 标记只消费一次；**用前必须确认不在主页面**（main_sign 缺失）——
@@ -266,75 +255,32 @@ class AdventureScenario(DeviceScenario):
                     return True
                 log('本轮结束，回主页面重新开始')
                 continue
-            # 连跑 batch 次冒险，期间不回主页面
-            for i in range(batch):
-                recalled = self.do_adventure()
-                if self.defer_wait:
-                    if self.pending is not None:
-                        # 冒险进行中已登记 pending，计数由 finish_pending 收尾时
-                        # 统一进行，本轮（本批）直接结束
-                        return True
-                    # 召回同步完成（skip_bad_weather）：count_cross 已计数，
-                    # 刷新本地计数判断上限
-                    today, done, history = load_progress(PROGRESS_FILE)
-                    log(f'已完成第 {done} 次冒险'
-                        + (f' / 目标 {max_times} 次' if max_times else ''))
-                else:
-                    # 检测到 adventure_end 点完 quit 就计数
-                    done += 1
-                    save_progress(PROGRESS_FILE, today, done, history)
-                    log(f'已完成第 {done} 次冒险'
-                        + (f' / 目标 {max_times} 次' if max_times else ''))
-                if max_times and done >= max_times:
-                    self.ensure_main_page()
-                    log('达到当天冒险次数，结束')
+            recalled = self.do_adventure()
+            if self.defer_wait:
+                if self.pending is not None:
+                    # 冒险进行中已登记 pending，计数由 finish_pending 收尾时
+                    # 统一进行，本轮直接结束
                     return True
-                if i < batch - 1:
-                    if recalled:
-                        # 召回成功后实测停在"出门"页（main_sign 识别不到），不是主页面：
-                        # 出门页直接点冒险入口，省一次 back + 出门；只有真的在主页面
-                        # （家里）才回家重进
-                        if self._on_main_page():
-                            log('召回后已在主页面，回主页面重新进入冒险')
-                            self.ensure_main_page()
-                            finished = self.goto_adventure()
-                        else:
-                            log('召回后已在出门页面，直接点冒险入口')
-                            try:
-                                self.click_until_gone_or_see(
-                                    'adventure', 'adventure_start', '前往冒险')
-                                finished = None
-                            except RuntimeError:
-                                log('召回后直接点冒险入口失败，回主页面重进')
-                                self.ensure_main_page()
-                                finished = self.goto_adventure()
-                        if finished and self.pending is not None:
-                            return True  # 延时收尾：pending 已登记，本轮直接结束
-                        if finished and count_finished(finished):
-                            return True
-                        if finished:
-                            break  # 重进时又等完别的活动：本批提前结束，交给下一轮
-                        continue
-                    # 上一把 quit 后落在"出门"页面：直接点冒险入口进准备页开下一把。
-                    # 点不到=被弹回主页面/处于进行中状态，回主页面重进
-                    try:
-                        self.click_until_gone_or_see(
-                            'adventure', 'adventure_start', '前往冒险')
-                    except RuntimeError:
-                        log('冒险后未在出门页面，回主页面重新进入')
-                        self.ensure_main_page()
-                        finished = self.goto_adventure()
-                        if finished and self.pending is not None:
-                            return True  # 延时收尾：pending 已登记，本轮直接结束
-                        if finished and count_finished(finished):
-                            return True
-                        if finished:
-                            break  # 重进时又等完别的活动：本批提前结束，交给下一轮
+                # 召回同步完成（skip_bad_weather）：count_cross 已计数，
+                # 刷新本地计数判断上限
+                today, done, history = load_progress(PROGRESS_FILE)
+                log(f'已完成第 {done} 次冒险'
+                    + (f' / 目标 {max_times} 次' if max_times else ''))
+            else:
+                # 检测到 adventure_end 点完 quit 就计数
+                done += 1
+                save_progress(PROGRESS_FILE, today, done, history)
+                log(f'已完成第 {done} 次冒险'
+                    + (f' / 目标 {max_times} 次' if max_times else ''))
+            if max_times and done >= max_times:
+                self.ensure_main_page()
+                log('达到当天冒险次数，结束')
+                return True
             if max_rounds and round_no >= max_rounds:
                 self.ensure_main_page()
                 log(f'已跑完 {max_rounds} 轮，返回')
                 return done > start_done
-            log(f'本轮连跑 {batch} 次冒险完成，回主页面重新开始')
+            log('本轮冒险完成，回主页面重新开始')
 
 
 if __name__ == '__main__':
