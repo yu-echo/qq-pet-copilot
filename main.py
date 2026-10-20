@@ -1760,13 +1760,12 @@ class MainWindow(MSFluentWindow):
         slider.setMinimumWidth(160)
         spin = _NoWheelSpinBox()
         spin.setRange(0, 100)
-        spin.setSuffix('%')
         spin.setFixedWidth(132)
         value = max(0, min(100, int(getattr(cfg.schedule, 'encourage_probability', 100) or 0)))
         slider.setValue(value)
         spin.setValue(value)
         enc_row.addWidget(slider, 1)
-        enc_row.addWidget(spin)
+        enc_row.addWidget(self._unit_spin(spin, '%'))
         lay.addLayout(enc_row)
 
         # 拖动滑块会连续触发，延后落盘，只写最后一次
@@ -1809,11 +1808,10 @@ class MainWindow(MSFluentWindow):
         interval_spin = _NoWheelSpinBox()
         interval_spin.setRange(10, 86400)
         interval_spin.setValue(max(10, int(cfg.care.interval_seconds)))
-        interval_spin.setSuffix(' 秒')
         interval_spin.setFixedWidth(132)
         interval_spin.valueChanged.connect(
             lambda v: self._save_schedule_interval('care', int(v)))
-        care_row.addWidget(interval_spin)
+        care_row.addWidget(self._unit_spin(interval_spin, '秒'))
         lay.addLayout(care_row)
 
         # -- 自动喂食 / 自动洗护：并排两张，窄窗口也不换行（各占一半）--
@@ -1984,15 +1982,15 @@ class MainWindow(MSFluentWindow):
         if item.mode == 'count':
             spin.setRange(1, 9999)
             spin.setValue(max(1, int(item.count)))
-            spin.setSuffix(' 次')
+            unit = '次'
             spin.valueChanged.connect(lambda v, it=item: self._on_plan_count_changed(it, v))
         else:
             spin.setRange(1, 24)
             spin.setValue(max(1, int(round(float(item.hours)))))
-            spin.setSuffix(' 小时')
+            unit = '小时'
             spin.valueChanged.connect(lambda v, it=item: self._on_plan_hours_changed(it, v))
         spin.setFixedWidth(132)
-        h.addWidget(spin)
+        h.addWidget(self._unit_spin(spin, unit))
 
         if item.activity == 'school':
             h.addWidget(self._plan_activity_extra(item))
@@ -2271,10 +2269,10 @@ class MainWindow(MSFluentWindow):
         spin = _NoWheelSpinBox()
         spin.setRange(0, 9999)
         spin.setValue(max(0, int(getattr(cfg, key).times_per_day)))
-        spin.setSuffix(' 次/天')
         spin.valueChanged.connect(
             lambda v, k=key: self._save_schedule_values({f'{k}.times_per_day': int(v)}))
-        stats.addWidget(self._stat_panel('每日目标', spin, '0 = 不执行', tints[1]), 1)
+        stats.addWidget(self._stat_panel('每日目标', self._unit_spin(spin, '次/天'),
+                                         '0 = 不执行', tints[1]), 1)
 
         done_label = StrongBodyLabel('-')
         self._poke_stats = getattr(self, '_poke_stats', {})
@@ -2316,9 +2314,8 @@ class MainWindow(MSFluentWindow):
             spin = _NoWheelSpinBox()
             spin.setRange(1, 999999)
             spin.setValue(max(1, int(seconds)))
-            spin.setSuffix(' 秒')
             spin.valueChanged.connect(lambda v, k=key: self._save_schedule_interval(k, v))
-            lay.addWidget(self._plan_param_row('执行间隔', spin))
+            lay.addWidget(self._plan_param_row('执行间隔', self._unit_spin(spin, '秒')))
 
         if count:
             limit = (getattr(cfg, key).times_per_day
@@ -2327,10 +2324,9 @@ class MainWindow(MSFluentWindow):
             spin = _NoWheelSpinBox()
             spin.setRange(0, 9999)
             spin.setValue(max(0, int(limit)))
-            spin.setSuffix(' 次/天')
             spin.valueChanged.connect(
                 lambda v, k=key: self._save_schedule_values({f'{k}.times_per_day': int(v)}))
-            lay.addWidget(self._plan_param_row('每日次数', spin))
+            lay.addWidget(self._plan_param_row('每日次数', self._unit_spin(spin, '次/天')))
 
         lay.addStretch(1)
         return card
@@ -2354,12 +2350,23 @@ class MainWindow(MSFluentWindow):
         spin.setRange(30, 86400)
         spin.setValue(max(30, int(getattr(load_config().runner,
                                           'moneybag_interval_seconds', 300) or 300)))
-        spin.setSuffix(' 秒')
         spin.valueChanged.connect(
             lambda v: self._save_schedule_values({'runner.moneybag_interval_seconds': int(v)}))
-        lay.addWidget(self._plan_param_row('巡检间隔', spin))
+        lay.addWidget(self._plan_param_row('巡检间隔', self._unit_spin(spin, '秒')))
         lay.addStretch(1)
         return card
+
+    @staticmethod
+    def _unit_spin(spin: '_NoWheelSpinBox', unit: str) -> QWidget:
+        """输入框 + 外置单位标签：单位不放进输入框后缀（后缀会被点击选中，
+        像选中"次/天"文字），输入框本身只接受数字。"""
+        box = QWidget()
+        h = QHBoxLayout(box)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(4)
+        h.addWidget(spin, 1)
+        h.addWidget(CaptionLabel(unit))
+        return box
 
     @staticmethod
     def _plan_param_row(label: str, widget: QWidget) -> QWidget:
