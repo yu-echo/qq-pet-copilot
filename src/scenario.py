@@ -1,6 +1,7 @@
 """场景基类：设备连接、截图、u2/OCR 定位点击、通用导航。"""
 from __future__ import annotations
 
+import random
 import time
 from datetime import datetime, timedelta
 
@@ -379,7 +380,7 @@ class DeviceScenario:
             cur = self.see(in_name, screen, source)
             if cur:
                 self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
-            if encourage:
+            if encourage and self._encourage_allowed():
                 enc = self.see('encourage_pet', screen, source)
                 if enc:
                     # 静默点击；日志按 ENCOURAGE_LOG_INTERVAL 节流（按钮每 ~12s 出现一次）
@@ -588,6 +589,19 @@ class DeviceScenario:
                 time.sleep(CLICK_INTERVAL)
         raise RuntimeError(f'{desc}: 未检测到进行中或结束状态')
 
+    def _encourage_allowed(self) -> bool:
+        """按 schedule.encourage_probability 掷一次判定。
+
+        100（默认）= 每次都点，与加这个字段之前的行为完全一致；0 = 从不鼓励；
+        中间值表示"发现鼓励按钮的这一次检查有几成概率去点"。
+        """
+        probability = int(getattr(self.cfg.schedule, 'encourage_probability', 100) or 0)
+        if probability >= 100:
+            return True
+        if probability <= 0:
+            return False
+        return random.randint(1, 100) <= probability
+
     def _encourage_burst(self) -> None:
         """在"鼓励宠物"按钮可见的页面上快速点击 schedule.encourage_times 次。
 
@@ -598,6 +612,9 @@ class DeviceScenario:
         """
         times = int(getattr(self.cfg.schedule, 'encourage_times', 0) or 0)
         if times <= 0:
+            return
+        if not self._encourage_allowed():
+            log('鼓励概率未命中，本轮不鼓励')
             return
         clicked = 0
         # 先找一次按钮位置（see 是全树 dump ~0.8s，按钮位置固定；找到后单轮连点

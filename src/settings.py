@@ -191,6 +191,27 @@ def save_raw(data) -> None:
     atomic_write_text(CONFIG_FILE, stream.getvalue())
 
 
+def plan_to_raw(items) -> list:
+    """把每日活动计划的 PlanItemConfig 列表转成可写回 YAML 的普通字典列表。"""
+    return [{
+        'activity': str(item.activity),
+        'mode': str(item.mode),
+        'count': int(item.count),
+        'hours': float(item.hours),
+        'attribute': str(item.attribute),
+        'work_location': str(item.work_location),
+        'work_duration': str(item.work_duration),
+        'adventure_duration': str(item.adventure_duration),
+    } for item in items]
+
+
+def save_plan(items) -> None:
+    """只更新 config.yaml 的 plan 段，其余段落与注释原样保留。"""
+    data = load_raw()
+    data['plan'] = plan_to_raw(items)
+    save_raw(data)
+
+
 def get_value(data, dotted_key: str, default=None):
     """按 'school.attribute' 形式的点路径取值。"""
     cur = data

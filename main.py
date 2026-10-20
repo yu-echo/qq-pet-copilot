@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QMessageBox,
+    QProgressBar,
     QSizePolicy,
     QSizeGrip,
     QTableWidgetItem,
@@ -51,6 +52,7 @@ from qfluentwidgets import (
     FluentIcon as FIF,
     HeaderCardWidget,
     HyperlinkLabel,
+    IconWidget,
     LineEdit,
     MessageBox,
     MSFluentWindow,
@@ -60,12 +62,14 @@ from qfluentwidgets import (
     PushButton,
     ScrollArea,
     SimpleCardWidget,
+    Slider,
     SpinBox,
     StrongBodyLabel,
     SwitchButton,
     TableWidget,
     Theme,
     TimeEdit,
+    isDarkTheme,
     setTheme,
 )
 
@@ -84,6 +88,7 @@ from src.config import (
     PROJECT_ROOT,
     PROFILE_ID,
     TASK_KEYS,
+    PlanItemConfig,
     find_adb,
     load_config,
     resource_path,
@@ -347,41 +352,19 @@ SETTING_FIELDS = [
 
 # 任务选项卡字段：任务队列顺序 + 各场景任务相关设置
 TASK_SETTING_FIELDS = [
-    ('tasks.order', '任务执行顺序（> 分隔）', 'str'),
-    ('tasks.main_order', '主任务顺序（> 分隔）', 'str'),
-    ('school.attribute', '属性点课程', ['力量', '智力', '魅力']),
-    ('school.times_per_day', '每天学习次数（0 不限）', 'int'),
+    # 计划表已经覆盖：tasks.order / main_order / school / work / adventure 的次数与参数
+    # 迁移到「计划」页的「更多设置」（见 PLAN_EXTRA_FIELDS）。
     ('schedule.daily_hour_limit', '学习工作时长上限（小时，0 不限）', 'int'),
     ('schedule.encourage_times', '鼓励次数（进行中页面快速点击）', 'int'),
-    ('work.location', '打工地点', list(settings_io.WORK_LOCATIONS)),
-    ('work.duration', '打工时长选择', ['10分钟', '45分钟', '2小时']),
-    ('work.times_per_day', '每天打工次数（0 不限）', 'int'),
-    ('work.employ_scroll_limit', '雇佣拖动上限', 'int'),
-    ('adventure.times_per_day', '每天冒险次数（0 不冒险）', 'int'),
-    ('adventure.start_time', '冒险调度时间', 'str'),
-    ('adventure.duration', '冒险时长选择', ['45秒', '2小时']),
     ('adventure.skip_bad_weather', '冒险跳过"天色不对"', 'bool'),
     ('adventure.batch', '单轮冒险次数', 'int'),
-    ('visit.times_per_day', '每天踩踩次数（0 不踩）', 'int'),
-    ('visit.start_time', '踩踩调度时间', 'str'),
-    ('pk.times_per_day', '每天 PK 次数（0 不 PK）', 'int'),
-    ('pk.start_time', 'PK 调度时间', 'str'),
-    ('friend_care.enabled', '启用好友护理', 'bool'),
-    ('friend_care.time_range', '好友护理时间段', 'str'),
     ('friend_care.friend_name', '护理好友名称', 'str'),
     ('friend_care.method', '护理好友方式', ['一键护理', 'ocr检测']),
-    ('friend_care.interval_seconds', '好友护理调度间隔（秒）', 'int'),
-    ('hire_friend.enabled', '雇佣好友开关', 'bool'),
-    ('hire_friend.time_range', '雇佣好友时间段', 'str'),
-    ('hire_friend.interval_seconds', '雇佣好友调度间隔（秒）', 'int'),
     ('hire_friend.friend_name', '雇佣好友名称', 'str'),
-    ('hire_friend.times_per_day', '雇佣好友次数（0 不雇佣）', 'int'),
     ('care.method', '护理方式', ['一键护理', 'ocr检测']),
-    ('care.energy_threshold', '体力阈值', 'int'),
-    ('care.clean_threshold', '清洁阈值', 'int'),
-    ('care.interval_seconds', '护理间隔（秒）', 'int'),
-    ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
+    # 体力/清洁阈值与自动喂食/洗护开关已挪到「活动与护理」卡片，这里不再重复列出
     ('employed.enabled', '被雇佣开关', 'bool'),
+    ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
     ('employed.time_range', '被雇佣时间段', 'str'),
     ('employed.interval_seconds', '被雇佣检查间隔（秒）', 'int'),
 ]
@@ -390,6 +373,21 @@ TASK_SETTING_FIELDS = [
 SCHEDULE_TASK_NAMES = {'care': '护理', 'adventure': '冒险', 'visit': '踩踩', 'pk': 'PK',
                        'hire_friend': '雇佣好友', 'friend_care': '好友护理',
                        'school': '学习', 'work': '打工', 'svip': 'SVIP礼包'}
+
+# 每日活动计划：活动名、学习属性、可选的单次时长
+PLAN_LABELS = {'school': '学习', 'work': '打工', 'adventure': '冒险'}
+PLAN_ATTRIBUTES = ('力量', '智力', '魅力')
+WORK_DURATION_OPTIONS = ('10分钟', '45分钟', '2小时')
+ADVENTURE_DURATION_OPTIONS = ('45秒', '2小时')
+
+
+def _duration_seconds(value: str) -> int:
+    """把「45秒 / 45分钟 / 2小时」换算成秒（识别不了按 0 处理）。"""
+    match = re.fullmatch(r'\s*(\d+)\s*(秒|分钟|小时)\s*', str(value or ''))
+    if not match:
+        return 0
+    amount = int(match.group(1))
+    return amount * {'秒': 1, '分钟': 60, '小时': 3600}[match.group(2)]
 
 # 设置/任务表单的分组卡片标题：按配置键第一段分组（顺序按字段首次出现）
 SETTING_GROUP_TITLES = {
@@ -1029,11 +1027,10 @@ class MainWindow(MSFluentWindow):
         self.navigationInterface.topLayout.setContentsMargins(4, 0, 4, 0)
         self.navigationInterface.setIndicatorAnimationEnabled(False)
         self.addSubInterface(self._build_home_page(), FIF.HOME, '主页')
-        self.addSubInterface(self._build_schedule_page(), FIF.CALENDAR, '调度')
+        self.addSubInterface(self._build_plan_page(), FIF.CALENDAR, '计划')
         self.stats_panel = StatsPanel()
         self.stats_panel.setObjectName('statsPage')
         self.addSubInterface(self._wrap_page(self.stats_panel), FIF.HISTORY, '统计')
-        self.addSubInterface(self._build_tasks_page(), FIF.TILES, '任务')
         self.addSubInterface(self._build_settings_page(), FIF.SETTING, '设置')
         self.stackedWidget.currentChanged.connect(self._on_tab_changed)
 
@@ -1565,43 +1562,13 @@ class MainWindow(MSFluentWindow):
             self._today_values['study_h'].setText('读取失败')
             self._today_values['study_h'].setToolTip(str(e))
         try:
-            self._refresh_schedule()
+            self._refresh_plan_page()
         except Exception as e:
             log(f'调度状态刷新失败: {e}')
 
     # ---- 调度页面 ----
 
-    def _build_schedule_page(self) -> QWidget:
-        """调度页：每任务 开关 / 执行间隔 / 启用时段 可直接在表格里编辑
-        （保存到 config.yaml，调度器下一轮热加载生效），下次执行列每秒刷新
-        ——调度器运行时读 queue_status.json 的精确时间，未运行时按配置推算。"""
-        page = QWidget()
-        page.setObjectName('schedulePage')
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 4, 0, 12)
-        layout.setSpacing(8)
-        self.schedule_table = TableWidget()
-        self.schedule_table.setRowCount(0)
-        self.schedule_table.setColumnCount(5)
-        self.schedule_table.setHorizontalHeaderLabels(
-            ['任务', '开关', '执行间隔', '启用时段', '下次执行'])
-        self.schedule_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch)
-        self.schedule_table.verticalHeader().setVisible(False)
-        self.schedule_table.verticalHeader().setDefaultSectionSize(38)
-        self.schedule_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.schedule_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        layout.addWidget(self.schedule_table, 1)
-        note = CaptionLabel('点击执行间隔/启用时段后修改，回车或离开输入框结束编辑；开关点击切换'
-                            '（保存到 config.yaml，调度器下一轮生效）；'
-                            '"下次执行"每秒刷新：调度器运行时显示精确时间，未运行时按配置推算；'
-                            '学习/打工由主任务组统一调度，无固定间隔，下次执行显示"启动后判定"。')
-        note.setWordWrap(True)
-        layout.addWidget(note)
-        self._schedule_sig: tuple | None = None  # 配置签名：变化且不在编辑中时重建编辑器
-        self._schedule_rows: list = []
-        self._schedule_order: list = []
-        return page
+    # ---- 计划页面（重构：任务表格 -> 每日活动计划）----
 
     @staticmethod
     def _clock_to_time(value):
@@ -1634,128 +1601,816 @@ class MainWindow(MSFluentWindow):
         t = QTime.fromString(str(value), 'HH:mm')
         return t if t.isValid() else QTime(0, 0)
 
-    # ---- 表格构建 ----
+    def _build_plan_page(self) -> QWidget:
+        """自动控制页：概览 + 每日活动计划 + 间隔任务 + 今日统计。
 
-    def _schedule_sig_value(self, cfg, rows: list, order: list) -> tuple:
-        """调度表格相关配置的签名：变化且不在编辑中时重建编辑器。"""
-        sig = [tuple(order)]
-        for key in rows:
-            item = getattr(cfg.tasks, key)
-            if key in ('adventure', 'visit', 'pk'):
-                interval_v = getattr(cfg, key).start_time
-            elif key == 'svip':
-                interval_v = tuple(item.daily_times)  # 每日领取时间（只存队列 daily_times）
-            elif key in ('care', 'hire_friend', 'friend_care'):
-                interval_v = getattr(cfg, key).interval_seconds
-            else:
-                interval_v = '—'
-            if key in ('hire_friend', 'friend_care'):
-                range_v = str(getattr(cfg, key).time_range)
-            else:
-                range_v = str(item.enabled_time_range)
-            sig.append((key, item.enabled, interval_v, range_v))
-        return tuple(sig)
+        交互参照 memgke-qq-pet 的「自动控制」页：计划条目按列表顺序执行，
+        每条可按次数或累计时长完成；SVIP/福袋/护理/踩踩/PK 这类不占主任务
+        线的功能单独做成卡片，放在计划表两侧。
+        """
+        page = QWidget()
+        page.setObjectName('planPage')
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 4, 0, 12)
+        outer.setSpacing(8)
 
-    def _schedule_table_editing(self) -> bool:
-        """当前焦点是否在调度表格内（编辑中）：是则暂缓重建，避免打断输入。"""
-        w = QApplication.focusWidget()
-        while w is not None:
-            if w is self.schedule_table:
-                return True
-            w = w.parent()
-        return False
+        scroll = ScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 10, 0)
+        layout.setSpacing(10)
+        layout.addWidget(self._build_plan_overview_card())
+        layout.addWidget(self._build_plan_list_card())
+        layout.addWidget(self._build_plan_side_cards())
+        layout.addWidget(self._build_plan_activity_card())
+        layout.addWidget(self._build_plan_stats_card())
+        # 原来「任务」页的参数（全局规则/冒险细节/护理与好友参数）并到这里，
+        # 计划表覆盖不到的部分不再单独占一个导航页
+        layout.addWidget(StrongBodyLabel('更多设置'))
+        layout.addWidget(self._build_settings_form(TASK_SETTING_FIELDS)[0])
+        # 照参考页收尾：运行状态条 + 通栏保存按钮
+        layout.addWidget(self._build_plan_run_panel())
+        self._plan_saved_hint = CaptionLabel('')
+        layout.addWidget(self._plan_saved_hint)
+        btn_save = PrimaryPushButton('保存配置')
+        btn_save.setFixedHeight(42)
+        btn_save.clicked.connect(lambda: self._persist_plan(manual=True))
+        layout.addWidget(btn_save)
+        layout.addStretch(1)
+        scroll.setWidget(body)
+        outer.addWidget(scroll, 1)
+        self._plan_scroll = scroll
+        # 切页时焦点落在第一个可编辑控件上会把页面滚走，强制回到顶部
+        QTimer.singleShot(0, lambda: scroll.verticalScrollBar().setValue(0))
 
-    def _rebuild_schedule_table(self, cfg, rows: list, order: list) -> None:
-        """重建调度表格：开关/执行间隔/启用时段用可编辑控件，下次执行列占位。"""
-        table = self.schedule_table
-        table.setRowCount(len(rows))
-        for row, key in enumerate(rows):
-            item = getattr(cfg.tasks, key)
-            in_order = key in order
-            name_item = QTableWidgetItem(SCHEDULE_TASK_NAMES[key])
-            name_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            if not in_order:
-                name_item.setToolTip('不在 tasks.order 中，不调度（可在任务选项卡修改顺序）')
-            table.setItem(row, 0, name_item)
-            table.setCellWidget(row, 1, self._make_switch_editor(key, item, in_order))
-            table.setCellWidget(row, 2, self._make_interval_editor(key, item, cfg, in_order))
-            table.setCellWidget(row, 3, self._make_range_editor(key, item, cfg, in_order))
-            cell = QTableWidgetItem('—')
-            cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            table.setItem(row, 4, cell)
+        self._plan_items = list(load_config().plan.items)
+        # 编辑后延迟落盘：连续点 +/- 只写一次文件
+        self._plan_save_timer = QTimer(self, singleShot=True, interval=800,
+                                       timeout=lambda: self._persist_plan())
+        self._rebuild_plan_rows()
+        return page
 
     @staticmethod
-    def _centered(widget: QWidget) -> QWidget:
-        """把控件包进水平居中容器（表格 cellWidget 默认靠左上）。"""
+    def _plan_cell(caption: str, value: QWidget, hint: str = '') -> QWidget:
+        cell = QWidget()
+        lay = QVBoxLayout(cell)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        lay.addWidget(CaptionLabel(caption))
+        lay.addWidget(value)
+        if hint:
+            tip = CaptionLabel(hint)
+            tip.setWordWrap(True)
+            lay.addWidget(tip)
+        return cell
+
+    def _build_plan_overview_card(self) -> HeaderCardWidget:
+        """顶部概览：自动控制开关 / 运行状态 / 当前活动类型（照参考页三栏）。"""
+        card = CompactCardWidget()
+        card.setTitle('自动控制')
+        body = QWidget()
+        row = QHBoxLayout(body)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+
+        cfg = load_config()
+        switch_box = QWidget()
+        switch_lay = QHBoxLayout(switch_box)
+        switch_lay.setContentsMargins(0, 0, 0, 0)
+        switch_lay.setSpacing(8)
+        self.plan_enabled_switch = SwitchButton()
+        self.plan_enabled_switch.setOnText('已启用')
+        self.plan_enabled_switch.setOffText('已停用')
+        self.plan_enabled_switch.setChecked(bool(getattr(cfg.plan, 'enabled', True)))
+        self.plan_enabled_switch.checkedChanged.connect(self._on_plan_enabled_changed)
+        switch_lay.addWidget(self.plan_enabled_switch)
+        switch_lay.addStretch(1)
+        row.addWidget(self._plan_cell('自动控制配置', switch_box, '启用后按每日计划自动执行'), 1)
+
+        self._plan_status_value = StrongBodyLabel('等待中')
+        self._plan_status_hint = CaptionLabel('等待自动控制任务')
+        self._plan_status_hint.setWordWrap(True)
+        status_cell = QWidget()
+        status_lay = QVBoxLayout(status_cell)
+        status_lay.setContentsMargins(0, 0, 0, 0)
+        status_lay.setSpacing(3)
+        status_lay.addWidget(CaptionLabel('运行状态'))
+        status_lay.addWidget(self._plan_status_value)
+        status_lay.addWidget(self._plan_status_hint)
+        row.addWidget(status_cell, 1)
+
+        self._plan_current_value = StrongBodyLabel('暂无任务')
+        self._plan_current_hint = CaptionLabel('暂无进行中的活动')
+        self._plan_current_hint.setWordWrap(True)
+        current_cell = QWidget()
+        current_lay = QVBoxLayout(current_cell)
+        current_lay.setContentsMargins(0, 0, 0, 0)
+        current_lay.setSpacing(3)
+        current_lay.addWidget(CaptionLabel('当前活动类型'))
+        current_lay.addWidget(self._plan_current_value)
+        current_lay.addWidget(self._plan_current_hint)
+        row.addWidget(current_cell, 1)
+
+        card.viewLayout.addWidget(body)
+        return card
+
+    def _build_plan_list_card(self) -> HeaderCardWidget:
+        """每日活动计划：可增删、可上下移，列表顺序即执行顺序。"""
+        card = CompactCardWidget()
+        card.setTitle('每日活动计划')
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+        body_lay.setSpacing(6)
+
+        head = QHBoxLayout()
+        tip = CaptionLabel('按列表顺序执行，完成一条再进下一条；可按次数或累计时长完成')
+        head.addWidget(tip)
+        head.addStretch(1)
+        btn_add = PushButton('新增条目')
+        btn_add.clicked.connect(self._add_plan_item)
+        head.addWidget(btn_add)
+        body_lay.addLayout(head)
+
+        self._plan_rows_host = QWidget()
+        self._plan_rows_layout = QVBoxLayout(self._plan_rows_host)
+        self._plan_rows_layout.setContentsMargins(0, 4, 0, 0)
+        self._plan_rows_layout.setSpacing(6)
+        body_lay.addWidget(self._plan_rows_host)
+        card.viewLayout.addWidget(body)
+        return card
+
+    # ---- 活动与护理（照参考页：鼓励概率 + 自动喂食/洗护）----
+
+    @staticmethod
+    def _panel_background() -> str:
+        """内嵌面板底色：深色主题略提亮，浅色主题略压暗，比卡片本身低一层。"""
+        return 'rgba(255, 255, 255, 0.045)' if isDarkTheme() else 'rgba(128, 128, 128, 0.055)'
+
+    def _build_plan_activity_card(self) -> 'CompactCardWidget':
+        """活动与护理：鼓励概率滑块 + 自动喂食 / 自动洗护两张卡。
+
+        这里的开关都接真实配置：鼓励概率写 schedule.encourage_probability，
+        喂食/洗护写 care.auto_feed / care.auto_bathe 与各自阈值。
+        """
+        cfg = load_config()
+        card = CompactCardWidget()
+        card.setTitle('活动与护理')
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        # -- 鼓励概率：文字 + 滑块 + 百分比输入，三者联动 --
+        enc_row = QHBoxLayout()
+        enc_row.setSpacing(14)
+        enc_text = QVBoxLayout()
+        enc_text.setContentsMargins(0, 0, 0, 0)
+        enc_text.setSpacing(2)
+        enc_text.addWidget(StrongBodyLabel('活动鼓励概率'))
+        enc_text.addWidget(CaptionLabel('活动进行期间，每次检查时触发鼓励的概率'))
+        enc_row.addLayout(enc_text)
+
+        slider = Slider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)
+        slider.setMinimumWidth(160)
+        spin = _NoWheelSpinBox()
+        spin.setRange(0, 100)
+        spin.setSuffix('%')
+        spin.setFixedWidth(104)
+        value = max(0, min(100, int(getattr(cfg.schedule, 'encourage_probability', 100) or 0)))
+        slider.setValue(value)
+        spin.setValue(value)
+        enc_row.addWidget(slider, 1)
+        enc_row.addWidget(spin)
+        lay.addLayout(enc_row)
+
+        # 拖动滑块会连续触发，延后落盘，只写最后一次
+        save_timer = QTimer(self, singleShot=True, interval=600,
+                            timeout=lambda: self._save_schedule_values(
+                                {'schedule.encourage_probability': int(slider.value())}))
+        self._activity_save_timer = save_timer
+
+        def sync(source, target, now: int) -> None:
+            target.blockSignals(True)
+            target.setValue(int(now))
+            target.blockSignals(False)
+            save_timer.start()
+
+        slider.valueChanged.connect(lambda v: sync(slider, spin, v))
+        spin.valueChanged.connect(lambda v: sync(spin, slider, v))
+
+        # -- 自动喂食 / 自动洗护：并排两张，窄窗口也不换行（各占一半）--
+        care_row = QHBoxLayout()
+        care_row.setSpacing(10)
+        care_row.addWidget(self._build_auto_care_card('feed'), 1)
+        care_row.addWidget(self._build_auto_care_card('bathe'), 1)
+        lay.addLayout(care_row)
+
+        card.viewLayout.addWidget(body)
+        return card
+
+    @staticmethod
+    def _care_stock(key: str) -> int | None:
+        """读状态缓存里的饼干/香皂库存（护理流程 OCR 写入），读不到返回 None。"""
+        try:
+            account = (load_accounts() or {}).get('default') or {}
+            value = account.get(key)
+        except Exception:
+            return None
+        try:
+            return None if value is None else int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _build_auto_care_card(self, kind: str) -> QWidget:
+        """自动喂食 / 自动洗护小卡：图标 + 标题 + 开关 + 当前库存 + 阈值。"""
+        cfg = load_config()
+        if kind == 'feed':
+            icon, title, subtitle = FIF.CAFE, '自动喂食', '保持宠物饱腹状态'
+            icon_bg = 'rgba(238, 165, 60, 0.20)'
+            stock_key, unit = 'biscuit', '饼干'
+            enabled = bool(getattr(cfg.care, 'auto_feed', True))
+            threshold = int(cfg.care.energy_threshold)
+            caption, action = '体力低于', '时喂食'
+            config_key, threshold_key = 'care.auto_feed', 'care.energy_threshold'
+        else:
+            icon, title, subtitle = FIF.BRUSH, '自动洗护', '维持宠物清洁状态'
+            icon_bg = 'rgba(80, 170, 220, 0.20)'
+            stock_key, unit = 'soap', '香皂'
+            enabled = bool(getattr(cfg.care, 'auto_bathe', True))
+            threshold = int(cfg.care.clean_threshold)
+            caption, action = '清洁低于', '时洗护'
+            config_key, threshold_key = 'care.auto_bathe', 'care.clean_threshold'
+
+        panel = QWidget()
+        panel.setObjectName('carePanel')
+        panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        panel.setStyleSheet(f'QWidget#carePanel {{ background: {self._panel_background()};'
+                            ' border-radius: 10px; }')
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        badge = QWidget()
+        badge.setFixedSize(36, 36)
+        badge.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        badge.setStyleSheet(f'QWidget {{ background: {icon_bg}; border-radius: 9px; }}')
+        badge_lay = QVBoxLayout(badge)
+        badge_lay.setContentsMargins(0, 0, 0, 0)
+        icon_widget = IconWidget(icon)
+        icon_widget.setFixedSize(18, 18)
+        badge_lay.addWidget(icon_widget, 0, Qt.AlignmentFlag.AlignCenter)
+        head.addWidget(badge)
+
+        title_box = QVBoxLayout()
+        title_box.setContentsMargins(0, 0, 0, 0)
+        title_box.setSpacing(1)
+        title_box.addWidget(StrongBodyLabel(title))
+        title_box.addWidget(CaptionLabel(subtitle))
+        head.addLayout(title_box, 1)
+
+        switch = SwitchButton()
+        switch.setOnText('开')
+        switch.setOffText('关')
+        switch.setChecked(enabled)
+        switch.checkedChanged.connect(
+            lambda checked, k=config_key: self._save_schedule_values({k: bool(checked)}))
+        head.addWidget(switch)
+        lay.addLayout(head)
+
+        stock_row = QHBoxLayout()
+        stock_row.setSpacing(8)
+        stock_row.addWidget(CaptionLabel('当前库存'))
+        stock_row.addStretch(1)
+        stock = self._care_stock(stock_key)
+        stock_label = StrongBodyLabel(f'{stock} {unit}' if stock is not None else f'-- {unit}')
+        stock_row.addWidget(stock_label)
+        lay.addLayout(stock_row)
+
+        threshold_row = QWidget()
+        threshold_lay = QHBoxLayout(threshold_row)
+        threshold_lay.setContentsMargins(0, 0, 0, 0)
+        threshold_lay.setSpacing(8)
+        threshold_lay.addWidget(CaptionLabel(caption))
+        threshold_lay.addStretch(1)
+        spin = _NoWheelSpinBox()
+        spin.setRange(0, 100)
+        spin.setValue(max(0, min(100, threshold)))
+        spin.setFixedWidth(96)
+        spin.valueChanged.connect(
+            lambda v, k=threshold_key: self._save_schedule_values({k: int(v)}))
+        threshold_lay.addWidget(spin)
+        threshold_lay.addWidget(CaptionLabel(action))
+        lay.addWidget(threshold_row)
+        # 护理方式选"一键护理"时不读状态，阈值用不上：交给原来的隐藏逻辑统一处理
+        self._care_threshold_rows[threshold_key] = (threshold_row, threshold_row)
+
+        # 库存每秒刷新（护理流程写完缓存后 GUI 要跟着变）
+        self._care_stock_labels = getattr(self, '_care_stock_labels', {})
+        self._care_stock_labels[kind] = (stock_label, unit)
+        return panel
+
+    def _build_plan_run_panel(self) -> QWidget:
+        """底部运行状态条：一行小标题 + 当前状态（每秒刷新）。"""
+        panel = QWidget()
+        panel.setObjectName('planRunPanel')
+        panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        panel.setStyleSheet(f'QWidget#planRunPanel {{ background: {self._panel_background()};'
+                            ' border-radius: 10px; }')
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(2)
+        lay.addWidget(CaptionLabel('运行状态'))
+        self._plan_run_state = StrongBodyLabel('未启动自动控制')
+        lay.addWidget(self._plan_run_state)
+        return panel
+
+    def _rebuild_plan_rows(self) -> None:
+        """重建计划行（活动/模式变化时控件结构不同，只能整行重建）。"""
+        lay = self._plan_rows_layout
+        while lay.count():
+            entry = lay.takeAt(0)
+            widget = entry.widget()
+            if widget is not None:
+                widget.deleteLater()
+        if not self._plan_items:
+            empty = BodyLabel('暂无计划条目，点右上角「新增条目」添加')
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lay.addWidget(empty)
+            return
+        for index, item in enumerate(self._plan_items):
+            lay.addWidget(self._make_plan_row(index, item))
+
+    def _make_plan_row(self, index: int, item) -> QWidget:
+        row = QWidget()
+        row.setObjectName('planRow')
+        row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        row.setStyleSheet('QWidget#planRow { background: rgba(128, 128, 128, 0.09);'
+                          ' border-radius: 8px; }')
+        h = QHBoxLayout(row)
+        h.setContentsMargins(10, 6, 10, 6)
+        h.setSpacing(8)
+
+        num = StrongBodyLabel(str(index + 1))
+        num.setFixedWidth(18)
+        h.addWidget(num)
+
+        combo_activity = ComboBox()
+        for key in PLAN_LABELS:
+            combo_activity.addItem(PLAN_LABELS[key], userData=key)
+        combo_activity.setCurrentIndex(list(PLAN_LABELS).index(item.activity)
+                                       if item.activity in PLAN_LABELS else 0)
+        combo_activity.setFixedWidth(84)
+        combo_activity.currentIndexChanged.connect(
+            lambda _i, it=item, c=combo_activity: self._on_plan_activity_changed(
+                it, c.currentData()))
+        h.addWidget(combo_activity)
+
+        combo_mode = ComboBox()
+        combo_mode.addItem('按次数', userData='count')
+        combo_mode.addItem('按时长', userData='duration')
+        combo_mode.setCurrentIndex(0 if item.mode == 'count' else 1)
+        combo_mode.setFixedWidth(84)
+        combo_mode.currentIndexChanged.connect(
+            lambda _i, it=item, c=combo_mode: self._on_plan_mode_changed(
+                it, c.currentData()))
+        h.addWidget(combo_mode)
+
+        spin = _NoWheelSpinBox()
+        if item.mode == 'count':
+            spin.setRange(1, 9999)
+            spin.setValue(max(1, int(item.count)))
+            spin.setSuffix(' 次')
+            spin.valueChanged.connect(lambda v, it=item: self._on_plan_count_changed(it, v))
+        else:
+            spin.setRange(1, 24)
+            spin.setValue(max(1, int(round(float(item.hours)))))
+            spin.setSuffix(' 小时')
+            spin.valueChanged.connect(lambda v, it=item: self._on_plan_hours_changed(it, v))
+        spin.setFixedWidth(132)
+        h.addWidget(spin)
+
+        if item.activity == 'school':
+            h.addWidget(self._plan_activity_extra(item))
+        elif item.activity == 'work':
+            h.addWidget(self._plan_activity_extra(item))
+            h.addWidget(self._plan_work_duration_combo(item))
+        elif item.activity == 'adventure':
+            h.addWidget(self._plan_activity_extra(item))
+
+        h.addStretch(1)
+
+        for text, slot, enabled in (
+                ('上移', lambda _c=False, i=index: self._move_plan_item(i, -1), index > 0),
+                ('下移', lambda _c=False, i=index: self._move_plan_item(i, 1),
+                 index < len(self._plan_items) - 1),
+                ('删除', lambda _c=False, i=index: self._remove_plan_item(i), True)):
+            btn = PushButton(text)
+            btn.setFixedWidth(56)
+            btn.setEnabled(enabled)
+            btn.clicked.connect(slot)
+            h.addWidget(btn)
+        return row
+
+    def _plan_activity_extra(self, item) -> QWidget:
+        """活动专属参数：学习=目标属性，打工=地点，冒险=单次时长。"""
+        cfg = load_config()
+        if item.activity == 'school':
+            combo = ComboBox()
+            for attr in PLAN_ATTRIBUTES:
+                combo.addItem(attr, userData=attr)
+            current = item.attribute or cfg.school.attribute
+            combo.setCurrentIndex(PLAN_ATTRIBUTES.index(current)
+                                  if current in PLAN_ATTRIBUTES else 0)
+            combo.setFixedWidth(84)
+            combo.currentIndexChanged.connect(
+                lambda _i, it=item, c=combo: self._on_plan_attr_changed(it, c.currentData()))
+            return combo
+        if item.activity == 'work':
+            # 打工地点：全部可选地点都在下拉里（只放当前地点就没法在计划行里换）
+            combo = ComboBox()
+            current = item.work_location or cfg.work.location
+            if not current:
+                combo.addItem('选择打工地点', userData='')
+            for loc in settings_io.WORK_LOCATIONS:
+                combo.addItem(loc, userData=loc)
+            if current and current not in settings_io.WORK_LOCATIONS:
+                combo.addItem(current, userData=current)  # 老配置里的自定义地点兜底
+            combo.setCurrentIndex(max(0, combo.findData(current)))
+            combo.setFixedWidth(150)
+            combo.currentIndexChanged.connect(
+                lambda _i, it=item, c=combo: self._on_plan_text_changed(
+                    it, 'work_location', c.currentData()))
+            return combo
+        combo = ComboBox()
+        for option in ADVENTURE_DURATION_OPTIONS:
+            combo.addItem(option, userData=option)
+        current = item.adventure_duration or cfg.adventure.duration
+        combo.setCurrentIndex(ADVENTURE_DURATION_OPTIONS.index(current)
+                              if current in ADVENTURE_DURATION_OPTIONS else 0)
+        combo.setFixedWidth(84)
+        combo.currentIndexChanged.connect(
+            lambda _i, it=item, c=combo: self._on_plan_text_changed(
+                it, 'adventure_duration', c.currentData()))
+        return combo
+
+    def _plan_work_duration_combo(self, item) -> QWidget:
+        combo = ComboBox()
+        for option in WORK_DURATION_OPTIONS:
+            combo.addItem(option, userData=option)
+        current = item.work_duration or load_config().work.duration
+        combo.setCurrentIndex(WORK_DURATION_OPTIONS.index(current)
+                              if current in WORK_DURATION_OPTIONS else 0)
+        combo.setFixedWidth(96)
+        combo.currentIndexChanged.connect(
+            lambda _i, it=item, c=combo: self._on_plan_text_changed(
+                it, 'work_duration', c.currentData()))
+        return combo
+
+    # ---- 计划条目编辑 ----
+
+    def _on_plan_activity_changed(self, item, activity: str) -> None:
+        if not activity or activity == item.activity:
+            return
+        item.activity = activity
+        # 切换活动后旧的专属参数不再适用：清空，回落到底层分段配置
+        item.attribute = '力量' if activity == 'school' else ''
+        item.work_location = ''
+        item.work_duration = ''
+        item.adventure_duration = ''
+        QTimer.singleShot(0, self._rebuild_plan_rows)  # 避免在信号里删除发送者
+        self._plan_save_timer.start()
+
+    def _on_plan_mode_changed(self, item, mode: str) -> None:
+        if not mode or mode == item.mode:
+            return
+        item.mode = mode
+        QTimer.singleShot(0, self._rebuild_plan_rows)
+        self._plan_save_timer.start()
+
+    def _on_plan_count_changed(self, item, value: int) -> None:
+        item.count = max(1, int(value))
+        self._plan_save_timer.start()
+
+    def _on_plan_hours_changed(self, item, value: int) -> None:
+        item.hours = float(max(1, int(value)))
+        self._plan_save_timer.start()
+
+    def _on_plan_attr_changed(self, item, attr: str) -> None:
+        item.attribute = str(attr or '')
+        self._plan_save_timer.start()
+
+    def _on_plan_text_changed(self, item, field: str, value: str) -> None:
+        setattr(item, field, str(value or '').strip())
+        self._plan_save_timer.start()
+
+    def _add_plan_item(self) -> None:
+        cfg = load_config()
+        self._plan_items.append(PlanItemConfig(
+            activity='school', mode='count', count=1,
+            attribute=cfg.school.attribute or '力量'))
+        self._rebuild_plan_rows()
+        self._plan_save_timer.start()
+
+    def _remove_plan_item(self, index: int) -> None:
+        if 0 <= index < len(self._plan_items):
+            del self._plan_items[index]
+            self._rebuild_plan_rows()
+            self._plan_save_timer.start()
+
+    def _move_plan_item(self, index: int, offset: int) -> None:
+        target = index + offset
+        if not (0 <= index < len(self._plan_items) and 0 <= target < len(self._plan_items)):
+            return
+        item = self._plan_items.pop(index)
+        self._plan_items.insert(target, item)
+        self._rebuild_plan_rows()
+        self._plan_save_timer.start()
+
+    def _on_plan_enabled_changed(self, checked: bool) -> None:
+        self._save_schedule_values({'plan_enabled': bool(checked)})
+
+    def _persist_plan(self, manual: bool = False) -> None:
+        """把计划写回 config.yaml；调度器每轮自动重读，最迟下一轮生效。"""
+        try:
+            settings_io.save_plan(self._plan_items)
+        except Exception as e:  # noqa: BLE001 - 写失败只提示，不影响继续编辑
+            log(f'保存每日计划失败: {e}')
+            if hasattr(self, '_plan_saved_hint'):
+                self._plan_saved_hint.setText(f'保存失败：{e}')
+            return
+        if hasattr(self, '_plan_saved_hint'):
+            self._plan_saved_hint.setText(f'已保存 {len(self._plan_items)} 条计划 '
+                                          f'· {datetime.now():%H:%M:%S}')
+        if manual:
+            log(f'每日计划已保存（{len(self._plan_items)} 条）')
+
+    # ---- 间隔 / 每日任务卡片 ----
+
+    def _build_plan_side_cards(self) -> QWidget:
+        """不占主任务线的功能：每日定时、固定间隔、计划空档执行。"""
         wrap = QWidget()
-        lay = QHBoxLayout(wrap)
-        lay.setContentsMargins(4, 0, 4, 0)
-        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(widget)
+        grid = QGridLayout(wrap)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(10)
+        cards = [
+            self._build_plan_task_card('svip', 'SVIP 礼包', '每日定时领取一次', time_edit=True),
+            self._build_plan_task_card('care', '护理', '按间隔检查体力/清洁并处理',
+                                       interval=True),
+            self._build_moneybag_card(),
+            self._build_plan_task_card('visit', '踩一踩', '计划空档时按次数执行',
+                                       time_edit=True, count=True),
+            self._build_plan_task_card('pk', 'PK', '计划空档时按次数执行',
+                                       time_edit=True, count=True),
+            self._build_plan_task_card('friend_care', '好友护理', '时间段内巡检好友宠物',
+                                       interval=True, time_range=True),
+            self._build_plan_task_card('hire_friend', '雇佣好友', '时间段内雇佣好友打工',
+                                       interval=True, time_range=True, count=True),
+        ]
+        # 两列：卡片本身有最小宽度，三列在默认窗口（约 1200 逻辑宽）下会被挤到窗口外
+        for i, widget in enumerate(cards):
+            grid.addWidget(widget, i // 2, i % 2)
+        for col in range(2):
+            grid.setColumnStretch(col, 1)
         return wrap
 
-    def _make_switch_editor(self, key: str, item, in_order: bool) -> QWidget:
-        cb = SwitchButton()
-        cb.setOnText('开')
-        cb.setOffText('关')
-        cb.setChecked(item.enabled)
-        cb.setEnabled(in_order)
-        cb.setToolTip('启用/停用该任务（保存到 config.yaml，调度器下一轮生效）'
-                      + ('' if in_order else '；不在 tasks.order 中，不调度'))
-        cb.checkedChanged.connect(lambda checked, k=key: self._save_schedule_bool(k, checked))
-        return self._centered(cb)
+    def _build_plan_task_card(self, key: str, title: str, subtitle: str,
+                              time_edit: bool = False, interval: bool = False,
+                              time_range: bool = False, count: bool = False) -> QWidget:
+        cfg = load_config()
+        item = getattr(cfg.tasks, key)
+        card = SimpleCardWidget()
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(6)
 
-    def _make_interval_editor(self, key: str, item, cfg, in_order: bool) -> QWidget:
-        if key == 'svip':
-            # 每日领取时间（HH:MM）：该任务没有场景级 start_time，只存队列 daily_times
+        head = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title_box.setContentsMargins(0, 0, 0, 0)
+        title_box.setSpacing(1)
+        title_box.addWidget(StrongBodyLabel(title))
+        tip = CaptionLabel(subtitle)
+        tip.setWordWrap(True)
+        title_box.addWidget(tip)
+        head.addLayout(title_box, 1)
+        switch = SwitchButton()
+        switch.setOnText('开')
+        switch.setOffText('关')
+        switch.setChecked(bool(item.enabled))
+        switch.checkedChanged.connect(lambda checked, k=key: self._save_schedule_bool(k, checked))
+        head.addWidget(switch)
+        lay.addLayout(head)
+
+        if time_edit:
+            value = (item.daily_times[0] if key == 'svip' and item.daily_times
+                     else getattr(cfg, key).start_time)
             te = _NoWheelTimeEdit()
             te.setDisplayFormat('HH:mm')
-            times = list(item.daily_times) or ['09:05']
-            te.setTime(self._qtime_from_value(times[0]))
-            te.setEnabled(in_order)
-            te.setToolTip('每日领取时间（HH:MM），每天到点执行一次')
-            te.timeChanged.connect(lambda qt, k=key: self._save_schedule_daily_time(k, qt))
-            return ClickToEdit(te)
-        if key in ('adventure', 'visit', 'pk'):
-            # 每日调度时间（HH:MM）：场景 start_time，保存时同步队列 daily_times
-            te = _NoWheelTimeEdit()
-            te.setDisplayFormat('HH:mm')
-            te.setTime(self._qtime_from_value(getattr(cfg, key).start_time))
-            te.setEnabled(in_order)
-            te.setToolTip('每日调度时间（HH:MM）')
-            te.timeChanged.connect(lambda qt, k=key: self._save_schedule_time(k, qt))
-            return ClickToEdit(te)
-        if key in ('care', 'hire_friend', 'friend_care'):
-            # 调度间隔（秒）：护理用 tasks.care.interval_seconds，好友护理/雇佣好友用场景值
-            value = (getattr(cfg.tasks, key).interval_seconds if key == 'care'
-                     else getattr(cfg, key).interval_seconds)
+            te.setTime(self._qtime_from_value(value))
+            te.timeChanged.connect(
+                lambda qt, k=key: (self._save_schedule_daily_time(k, qt) if k == 'svip'
+                                   else self._save_schedule_time(k, qt)))
+            lay.addWidget(self._plan_param_row('每日时间', te))
+
+        if interval:
+            seconds = (getattr(cfg.tasks, key).interval_seconds if key == 'care'
+                       else getattr(cfg, key).interval_seconds)
             spin = _NoWheelSpinBox()
             spin.setRange(1, 999999)
-            spin.setValue(max(1, int(value)))
+            spin.setValue(max(1, int(seconds)))
             spin.setSuffix(' 秒')
-            spin.setEnabled(in_order)
-            spin.setToolTip('调度间隔（秒）')
             spin.valueChanged.connect(lambda v, k=key: self._save_schedule_interval(k, v))
-            return ClickToEdit(spin)
-        # 学习/打工：主任务组统一调度，无固定间隔
-        label = BodyLabel('—')
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setToolTip('学习/打工由主任务组（冒险/学习/打工/雇佣好友）按需统一调度，无固定间隔')
-        return label
+            lay.addWidget(self._plan_param_row('执行间隔', spin))
 
-    def _make_range_editor(self, key: str, item, cfg, in_order: bool) -> QWidget:
-        if key in ('hire_friend', 'friend_care'):
+        if count:
+            limit = (getattr(cfg, key).times_per_day
+                     if hasattr(getattr(cfg, key), 'times_per_day')
+                     else getattr(cfg.tasks, key).times_per_day)
+            spin = _NoWheelSpinBox()
+            spin.setRange(0, 9999)
+            spin.setValue(max(0, int(limit)))
+            spin.setSuffix(' 次/天')
+            spin.valueChanged.connect(
+                lambda v, k=key: self._save_schedule_values({f'{k}.times_per_day': int(v)}))
+            lay.addWidget(self._plan_param_row('每日次数', spin))
+
+        if time_range:
             value = str(getattr(cfg, key).time_range)
+            edit = LineEdit()
+            edit.setText(value)
+            edit.setPlaceholderText('如 14:00-19:30')
+            edit.editingFinished.connect(
+                lambda e=edit, k=key: self._save_schedule_range(k, e.text()))
+            lay.addWidget(self._plan_param_row('启用时段', edit))
+
+        lay.addStretch(1)
+        return card
+
+    def _build_moneybag_card(self) -> QWidget:
+        """成长福袋：固定间隔巡检（runner 内部 300 秒），只展示累计金币。"""
+        card = SimpleCardWidget()
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(6)
+        lay.addWidget(StrongBodyLabel('成长福袋'))
+        tip = CaptionLabel('固定间隔巡检好友家福袋，不占用计划条目')
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        try:
+            coins = load_moneybag_stats()['coins']
+        except Exception:
+            coins = 0
+        lay.addWidget(self._plan_param_row('今日累计', StrongBodyLabel(f'{coins} 金币')))
+        lay.addWidget(self._plan_param_row('巡检间隔', BodyLabel('5 分钟（固定）')))
+        lay.addStretch(1)
+        return card
+
+    @staticmethod
+    def _plan_param_row(label: str, widget: QWidget) -> QWidget:
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        h.addWidget(CaptionLabel(label))
+        h.addWidget(widget, 1)
+        return row
+
+    # ---- 今日统计与进度 ----
+
+    def _build_plan_stats_card(self) -> HeaderCardWidget:
+        card = CompactCardWidget()
+        card.setTitle('今日执行统计')
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        self._plan_stat_values = {}
+        self._plan_stat_hours = {}
+        for key in PLAN_LABELS:
+            cell = QWidget()
+            cell_lay = QVBoxLayout(cell)
+            cell_lay.setContentsMargins(0, 0, 0, 0)
+            cell_lay.setSpacing(2)
+            cell_lay.addWidget(CaptionLabel(PLAN_LABELS[key]))
+            value = StrongBodyLabel('0 次')
+            cell_lay.addWidget(value)
+            hours = CaptionLabel('累计 0 小时')
+            cell_lay.addWidget(hours)
+            self._plan_stat_values[key] = value
+            self._plan_stat_hours[key] = hours
+            row.addWidget(cell, 1)
+        lay.addLayout(row)
+
+        progress_head = QHBoxLayout()
+        progress_head.addWidget(CaptionLabel('当前条目执行进度'))
+        progress_head.addStretch(1)
+        self._plan_progress_text = StrongBodyLabel('今日计划已完成')
+        progress_head.addWidget(self._plan_progress_text)
+        lay.addLayout(progress_head)
+
+        self._plan_progress_bar = QProgressBar()
+        self._plan_progress_bar.setTextVisible(False)
+        self._plan_progress_bar.setFixedHeight(10)
+        self._plan_progress_bar.setRange(0, 100)
+        self._plan_progress_bar.setStyleSheet(
+            'QProgressBar { border: none; border-radius: 5px;'
+            ' background: rgba(128, 128, 128, 0.18); }'
+            'QProgressBar::chunk { border-radius: 5px;'
+            ' background: qlineargradient(x1:0, y1:0, x2:1, y2:0,'
+            ' stop:0 #7c6cf0, stop:0.5 #f07a7a, stop:1 #7ce08a); }')
+        lay.addWidget(self._plan_progress_bar)
+
+        card.viewLayout.addWidget(body)
+        return card
+
+    def _refresh_plan_page(self) -> None:
+        """每秒刷新：运行状态 / 今日统计 / 当前条目进度（计划行不重建，避免打断编辑）。"""
+        running = self._runner_proc is not None and self._runner_proc.poll() is None
+        st = load_queue_status() or {}
+        if running:
+            self._plan_status_value.setText('运行中')
+            self._plan_status_hint.setText(str(st.get('message') or '等待自动控制任务'))
+            current = st.get('current') or ''
+            self._plan_current_value.setText(current or '暂无任务')
+            hint = str(st.get('pending') or '')
+            self._plan_current_hint.setText(hint or '暂无进行中的活动')
         else:
-            value = str(item.enabled_time_range)
-        edit = LineEdit()
-        edit.setText(value)
-        edit.setEnabled(in_order)
-        edit.setPlaceholderText('如 00:00-23:59 或 08:00:00-20:00:00')
-        edit.setToolTip('启用时段：HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS，结束早于开始视为跨零点')
-        edit.editingFinished.connect(
-            lambda _e=edit, k=key: self._save_schedule_range(k, _e.text()))
-        return ClickToEdit(edit)
+            self._plan_status_value.setText('等待中')
+            self._plan_status_hint.setText('调度器未启动，点顶部「开始」')
+            self._plan_current_value.setText('暂无任务')
+            self._plan_current_hint.setText('暂无进行中的活动')
+
+        # 底部运行状态条：一句话说清现在在干什么
+        if hasattr(self, '_plan_run_state'):
+            if running:
+                current = str(st.get('current') or '').strip()
+                self._plan_run_state.setText(f'自动控制运行中 · {current}' if current
+                                             else '自动控制运行中')
+            else:
+                self._plan_run_state.setText('未启动自动控制')
+
+        # 喂食/洗护卡片的库存（护理流程 OCR 写完缓存后这里跟着变）
+        for kind, (label, unit) in getattr(self, '_care_stock_labels', {}).items():
+            value = self._care_stock('biscuit' if kind == 'feed' else 'soap')
+            label.setText(f'{value} {unit}' if value is not None else f'-- {unit}')
+
+        cfg = load_config()
+        counts = {}
+        for key, progress_file in (('school', SCHOOL_PROGRESS_FILE),
+                                   ('work', WORK_PROGRESS_FILE),
+                                   ('adventure', ADVENTURE_PROGRESS_FILE)):
+            try:
+                _, done, _ = load_progress(progress_file, quiet=True)
+            except Exception:
+                done = 0
+            counts[key] = int(done)
+            self._plan_stat_values[key].setText(f'{done} 次')
+
+        try:
+            study_s, work_s = load_durations(cfg.schedule.school_factor,
+                                             cfg.schedule.work_factor)
+        except Exception:
+            study_s = work_s = 0
+        seconds = {
+            'school': study_s,
+            'work': work_s,
+            'adventure': counts['adventure'] * _duration_seconds(cfg.adventure.duration),
+        }
+        for key in PLAN_LABELS:
+            self._plan_stat_hours[key].setText(
+                f'累计 {seconds[key] / 3600:.1f}'.removesuffix('.0') + ' 小时')
+
+        # 当前条目：计划表里第一条还没做完的
+        index, item, done_value, target = None, None, 0, 0
+        for i, plan_item in enumerate(self._plan_items):
+            if plan_item.mode == 'count':
+                done_value, target = counts.get(plan_item.activity, 0), max(1, int(plan_item.count))
+            else:
+                done_value = seconds.get(plan_item.activity, 0)
+                target = max(1, int(round(float(plan_item.hours) * 3600)))
+            if done_value < target:
+                index, item = i, plan_item
+                break
+        if item is None:
+            self._plan_progress_text.setText('今日计划已完成')
+            self._plan_progress_bar.setValue(100)
+            return
+        percent = int(min(100, done_value / target * 100)) if target else 0
+        self._plan_progress_bar.setValue(percent)
+        if item.mode == 'count':
+            text = f'{done_value}次 / {target}次'
+        else:
+            text = f'{done_value / 3600:.1f}'.removesuffix('.0') + f' 小时 / {target / 3600:.1f}'.removesuffix('.0') + ' 小时'
+        self._plan_progress_text.setText(
+            f'第 {index + 1} 项 · {PLAN_LABELS.get(item.activity, item.activity)} · {text}')
 
     # ---- 调度表格保存 ----
 
@@ -1822,12 +2477,10 @@ class MainWindow(MSFluentWindow):
         value = text.strip()
         if not self._parse_range_text(value):
             log(f'启用时段格式无效: {value!r}，应为 HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS，已恢复')
-            if self._schedule_rows:
-                try:
-                    self._rebuild_schedule_table(
-                        load_config(), self._schedule_rows, self._schedule_order)
-                except Exception as e:
-                    log(f'恢复调度表格失败: {e}')
+            try:
+                self._rebuild_plan_rows()
+            except Exception as e:
+                log(f'恢复计划表失败: {e}')
             return
         quoted = DoubleQuotedScalarString(value)
         if key in ('hire_friend', 'friend_care'):
@@ -1971,45 +2624,6 @@ class MainWindow(MSFluentWindow):
             return '—'
         return self._predict_next(key, item, cfg, now)
 
-    def _refresh_schedule(self) -> None:
-        """刷新调度选项卡：配置变化（且不在编辑中）重建编辑器；下次执行列每秒更新。
-        调度器运行时读 runs/queue_status.json 的精确时间，未运行按配置推算。"""
-        cfg = load_config()
-        running = self._runner_proc is not None and self._runner_proc.poll() is None
-        states = (load_queue_status() or {}).get('tasks', {}) if running else {}
-        order = [k.strip() for k in cfg.tasks.order.split('>') if k.strip()]
-        # 表格顺序 = tasks.order，不在 order 里的任务排最后并标注不调度
-        rows = [k for k in order if k in SCHEDULE_TASK_NAMES]
-        rows += [k for k in TASK_KEYS if k not in rows]
-        self._schedule_rows = rows
-        self._schedule_order = order
-        sig = self._schedule_sig_value(cfg, rows, order)
-        if sig != self._schedule_sig:
-            if not self._schedule_table_editing():
-                self._rebuild_schedule_table(cfg, rows, order)
-                self._schedule_sig = sig
-        now = datetime.now()
-        for row, key in enumerate(rows):
-            item = getattr(cfg.tasks, key)
-            in_order = key in order
-            text = self._next_exec_text(key, item, cfg, states.get(key, {}),
-                                        running, now, in_order)
-            cell = QTableWidgetItem(text)
-            cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            if text == '现在可执行':
-                cell.setForeground(QColor('#7cfc90'))
-            if text != '—':
-                if running and states.get(key):
-                    tip = '调度器运行中（精确时间）'
-                elif running:
-                    tip = '调度器运行中但未写入该任务状态，按配置推算'
-                else:
-                    tip = '调度器未运行，按当前配置推算'
-            else:
-                tip = ''
-            cell.setToolTip(tip)
-            self.schedule_table.setItem(row, 4, cell)
-
     # ---- 设置/任务页面 ----
 
     def _make_field_widget(self, key: str, kind) -> QWidget:
@@ -2103,9 +2717,7 @@ class MainWindow(MSFluentWindow):
                 container.add_card(card)
             w = self._make_field_widget(key, kind)
             form.addRow(BodyLabel(label), w)
-            field_w = self._setting_widgets[key][0]
-            if key in ('care.energy_threshold', 'care.clean_threshold'):
-                self._care_threshold_rows[key] = (form.labelForField(w), field_w)
+            # 体力/清洁阈值已挪到「活动与护理」卡片，那里自己登记隐藏规则
         container.finalize()  # 字段已填完，按卡片实际高度平衡进两列
         return container, group_forms, group_cards
 
@@ -2120,12 +2732,6 @@ class MainWindow(MSFluentWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 12)
         layout.addWidget(scroll)
-        return page
-
-    def _build_tasks_page(self) -> QWidget:
-        """任务页：任务队列执行顺序 + 各场景任务相关设置。"""
-        page = self._wrap_form_page(self._build_settings_form(TASK_SETTING_FIELDS)[0])
-        page.setObjectName('tasksPage')
         return page
 
     def _build_settings_page(self) -> QWidget:
@@ -2177,10 +2783,13 @@ class MainWindow(MSFluentWindow):
 
 
     def _on_tab_changed(self, index: int) -> None:
-        """切到任务页或设置页时加载当前配置（按页面 objectName 判定，不依赖页序）。"""
+        """切到计划页或设置页时加载当前配置（按页面 objectName 判定，不依赖页序）。"""
         w = self.stackedWidget.widget(index)
-        if w is not None and w.objectName() in ('tasksPage', 'settingsPage'):
+        if w is not None and w.objectName() in ('planPage', 'settingsPage'):
             self.load_settings()
+        if w is not None and w.objectName() == 'planPage' and hasattr(self, '_plan_scroll'):
+            # 焦点是异步落到首个输入控件的，延后再滚到顶，避免刚归零又被拉走
+            QTimer.singleShot(120, lambda: self._plan_scroll.verticalScrollBar().setValue(0))
 
     def _on_care_method_changed(self, method: str) -> None:
         """护理方式选"一键护理"时隐藏体力/清洁阈值行（不读状态，阈值用不上）。"""

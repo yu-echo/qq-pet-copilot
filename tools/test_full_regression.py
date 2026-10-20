@@ -745,7 +745,8 @@ class FullRegression(unittest.TestCase):
         with patch.object(main.MainWindow,'_start_all'), patch.object(main.MainWindow,'_start_update_check'), patch.object(main.MainWindow,'_fill_devices'):
             window=main.MainWindow()
             self.assertFalse(any('emulator' in key for key in window._setting_widgets))
-            self.assertEqual(window.stackedWidget.count(),5)
+            # 主页/计划/统计/设置 4 页：原「任务」页已并入计划页（2026-10-20 重构）
+            self.assertEqual(window.stackedWidget.count(),4)
             for i in range(window.stackedWidget.count()):
                 page=window.stackedWidget.widget(i)
                 self.assertTrue(page.objectName())

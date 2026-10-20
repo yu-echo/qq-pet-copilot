@@ -165,13 +165,17 @@ class CareScenario(DeviceScenario):
         self.last_care_at: datetime | None = None  # 上次护理检查时间（护理间隔用）
         self.energy_threshold = self.cfg.care.energy_threshold
         self.clean_threshold = self.cfg.care.clean_threshold
+        self.auto_feed = bool(getattr(self.cfg.care, 'auto_feed', True))
+        self.auto_bathe = bool(getattr(self.cfg.care, 'auto_bathe', True))
         self.method = self.cfg.care.method
         if self.method not in CARE_METHODS:
             raise ValueError(
                 f'config.yaml 中 care.method 配置无效: {self.method!r}，'
                 f'可选: {"/".join(CARE_METHODS)}')
-        log(f'护理方式: {self.method}，体力阈值: {self.energy_threshold}，'
-            f'清洁阈值: {self.clean_threshold}')
+        log(f'护理方式: {self.method}，体力阈值: {self.energy_threshold}'
+            f'（自动喂食{"开" if self.auto_feed else "关"}），'
+            f'清洁阈值: {self.clean_threshold}'
+            f'（自动洗护{"开" if self.auto_bathe else "关"}）')
 
     # ---- 状态识别 ----
 
@@ -563,13 +567,13 @@ class CareScenario(DeviceScenario):
                       mood=status.get('心情'))
         cared = False
         energy = status.get('体力')
-        if energy is not None and energy < self.energy_threshold:
+        if self.auto_feed and energy is not None and energy < self.energy_threshold:
             log(f'体力 {energy} < 阈值 {self.energy_threshold}，需要喂食')
             self.feed(source)
             cared = True
             source = self.dev.hierarchy()
         clean = status.get('清洁')
-        if clean is not None and clean < self.clean_threshold:
+        if self.auto_bathe and clean is not None and clean < self.clean_threshold:
             log(f'清洁 {clean} < 阈值 {self.clean_threshold}，需要洗澡')
             self.shower(source)
             cared = True
