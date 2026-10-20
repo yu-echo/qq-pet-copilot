@@ -1624,6 +1624,7 @@ class MainWindow(MSFluentWindow):
         layout.addWidget(self._build_plan_overview_card())
         layout.addWidget(self._build_plan_list_card())
         layout.addWidget(self._build_plan_side_cards())
+        layout.addWidget(self._build_visit_pk_card())
         layout.addWidget(self._build_plan_activity_card())
         layout.addWidget(self._build_plan_stats_card())
         # 原来「任务」页的参数（全局规则/冒险细节/护理与好友参数）并到这里，
@@ -1779,7 +1780,7 @@ class MainWindow(MSFluentWindow):
         spin = _NoWheelSpinBox()
         spin.setRange(0, 100)
         spin.setSuffix('%')
-        spin.setFixedWidth(104)
+        spin.setFixedWidth(132)
         value = max(0, min(100, int(getattr(cfg.schedule, 'encourage_probability', 100) or 0)))
         slider.setValue(value)
         spin.setValue(value)
@@ -1901,7 +1902,7 @@ class MainWindow(MSFluentWindow):
         spin = _NoWheelSpinBox()
         spin.setRange(0, 100)
         spin.setValue(max(0, min(100, threshold)))
-        spin.setFixedWidth(96)
+        spin.setFixedWidth(132)
         spin.valueChanged.connect(
             lambda v, k=threshold_key: self._save_schedule_values({k: int(v)}))
         threshold_lay.addWidget(spin)
@@ -2153,7 +2154,7 @@ class MainWindow(MSFluentWindow):
     # ---- 间隔 / 每日任务卡片 ----
 
     def _build_plan_side_cards(self) -> QWidget:
-        """不占主任务线的功能：每日定时、固定间隔、计划空档执行。"""
+        """不占主任务线的功能：每日定时、固定间隔。踩踩/PK 单独合并成一张卡。"""
         wrap = QWidget()
         grid = QGridLayout(wrap)
         grid.setContentsMargins(0, 0, 0, 0)
@@ -2163,10 +2164,6 @@ class MainWindow(MSFluentWindow):
             self._build_plan_task_card('care', '护理', '按间隔检查体力/清洁并处理',
                                        interval=True),
             self._build_moneybag_card(),
-            self._build_plan_task_card('visit', '踩一踩', '计划空档时按次数执行',
-                                       time_edit=True, count=True),
-            self._build_plan_task_card('pk', 'PK', '计划空档时按次数执行',
-                                       time_edit=True, count=True),
             self._build_plan_task_card('friend_care', '好友护理', '时间段内巡检好友宠物',
                                        interval=True, time_range=True),
             self._build_plan_task_card('hire_friend', '雇佣好友', '时间段内雇佣好友打工',
@@ -2178,6 +2175,116 @@ class MainWindow(MSFluentWindow):
         for col in range(2):
             grid.setColumnStretch(col, 1)
         return wrap
+
+    # ---- 踩一踩 / PK 合并卡（照参考页：开关 + 开始时间 + 今日统计）----
+
+    @staticmethod
+    def _h_line() -> QWidget:
+        """区块之间的细分隔线。"""
+        line = QWidget()
+        line.setFixedHeight(1)
+        line.setStyleSheet('background: rgba(128, 128, 128, 0.18); border: none;')
+        return line
+
+    def _stat_panel(self, caption: str, value: QWidget, hint: str, tint: str) -> QWidget:
+        """参考页风格的统计小格：淡色圆角底 + 标注 + 值 + 小字说明。"""
+        panel = QWidget()
+        panel.setObjectName('statPanel')
+        panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        panel.setStyleSheet(f'QWidget#statPanel {{ background: {tint};'
+                            ' border-radius: 8px; }')
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(12, 9, 12, 9)
+        lay.setSpacing(3)
+        lay.addWidget(CaptionLabel(caption))
+        lay.addWidget(value)
+        tip = CaptionLabel(hint)
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        return panel
+
+    def _build_visit_pk_card(self) -> 'CompactCardWidget':
+        """自动踩一踩 + 自动 PK 合并卡。
+
+        开始时间只是下限：调度器判定「当前时间 >= 开始时间且当天次数未满」就执行
+        （scenarios/runner.py 的 visit_due/pk_due），所以打开开关当天立即跑，
+        不用等到明天的这个时间——与参考页 autoPokeStarted 的语义一致。
+        """
+        card = CompactCardWidget()
+        card.setTitle('踩一踩与 PK')
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+        lay.addWidget(self._build_poke_section(
+            'visit', '自动踩一踩',
+            '到开始时间即执行，每位好友当天只踩一次；当天完成后等待次日自动执行'))
+        lay.addWidget(self._h_line())
+        lay.addWidget(self._build_poke_section(
+            'pk', '自动 PK',
+            '到开始时间即执行，打完自动切换下一个好友；当天次数用完等待次日'))
+        card.viewLayout.addWidget(body)
+        return card
+
+    def _build_poke_section(self, key: str, title: str, subtitle: str) -> QWidget:
+        """踩踩/PK 单个区块：标题 + 开关一行，下面三格统计（时间/目标/已执行）。"""
+        cfg = load_config()
+        section = QWidget()
+        lay = QVBoxLayout(section)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        text_box = QVBoxLayout()
+        text_box.setContentsMargins(0, 0, 0, 0)
+        text_box.setSpacing(1)
+        text_box.addWidget(StrongBodyLabel(title))
+        tip = CaptionLabel(subtitle)
+        tip.setWordWrap(True)
+        text_box.addWidget(tip)
+        head.addLayout(text_box, 1)
+        switch = SwitchButton()
+        switch.setOnText('开')
+        switch.setOffText('关')
+        switch.setChecked(bool(getattr(cfg.tasks, key).enabled))
+        switch.checkedChanged.connect(
+            lambda checked, k=key: self._save_schedule_bool(k, checked))
+        head.addWidget(switch)
+        lay.addLayout(head)
+
+        if key == 'visit':
+            tints = ('rgba(90, 140, 250, 0.10)',) * 3
+        else:
+            # PK 三格照参考页用 蓝/绿/紫 三种淡色
+            tints = ('rgba(90, 140, 250, 0.10)', 'rgba(80, 200, 140, 0.10)',
+                     'rgba(150, 110, 240, 0.10)')
+
+        stats = QHBoxLayout()
+        stats.setSpacing(10)
+
+        te = _NoWheelTimeEdit()
+        te.setDisplayFormat('HH:mm')
+        te.setTime(self._qtime_from_value(getattr(cfg, key).start_time))
+        te.timeChanged.connect(
+            lambda qt, k=key: self._save_schedule_time(k, qt))
+        stats.addWidget(self._stat_panel('每日开始时间', te, '每天北京时间', tints[0]), 1)
+
+        spin = _NoWheelSpinBox()
+        spin.setRange(0, 9999)
+        spin.setValue(max(0, int(getattr(cfg, key).times_per_day)))
+        spin.setSuffix(' 次/天')
+        spin.valueChanged.connect(
+            lambda v, k=key: self._save_schedule_values({f'{k}.times_per_day': int(v)}))
+        stats.addWidget(self._stat_panel('每日目标', spin, '0 = 不执行', tints[1]), 1)
+
+        done_label = StrongBodyLabel('-')
+        self._poke_stats = getattr(self, '_poke_stats', {})
+        self._poke_stats[key] = done_label
+        stats.addWidget(self._stat_panel('今日已执行', done_label, '成功开始数量', tints[2]), 1)
+
+        lay.addLayout(stats)
+        return section
 
     def _build_plan_task_card(self, key: str, title: str, subtitle: str,
                               time_edit: bool = False, interval: bool = False,
@@ -2361,6 +2468,18 @@ class MainWindow(MSFluentWindow):
         for kind, (label, unit) in getattr(self, '_care_stock_labels', {}).items():
             value = self._care_stock('biscuit' if kind == 'feed' else 'soap')
             label.setText(f'{value} {unit}' if value is not None else f'-- {unit}')
+
+        # 踩踩/PK 今日已执行
+        for key, progress_file in (('visit', VISIT_PROGRESS_FILE),
+                                   ('pk', PK_PROGRESS_FILE)):
+            label = getattr(self, '_poke_stats', {}).get(key)
+            if label is None:
+                continue
+            try:
+                _, done, _ = load_progress(progress_file, quiet=True)
+            except Exception:
+                done = 0
+            label.setText(f'{done} 次')
 
         cfg = load_config()
         counts = {}
