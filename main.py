@@ -1563,6 +1563,8 @@ class MainWindow(MSFluentWindow):
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 10, 0)
         layout.setSpacing(10)
+        # 今日执行统计放最上面（用户指定：统计在自动控制前面）
+        layout.addWidget(self._build_plan_stats_card())
         layout.addWidget(self._build_plan_overview_card())
         # 保存按钮放最上方醒目位置（底部运行状态条已删除）
         self._plan_saved_hint = CaptionLabel('')
@@ -1574,9 +1576,8 @@ class MainWindow(MSFluentWindow):
         # 踩一踩 / PK 放在计划表前面
         layout.addWidget(self._build_visit_pk_card())
         layout.addWidget(self._build_plan_list_card())
+        # 侧卡区左列下方空位放「活动与护理」，右列放好友护理/雇佣好友/被雇佣
         layout.addWidget(self._build_plan_side_cards())
-        layout.addWidget(self._build_plan_activity_card())
-        layout.addWidget(self._build_plan_stats_card())
         layout.addStretch(1)
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)
@@ -1688,11 +1689,12 @@ class MainWindow(MSFluentWindow):
         """内嵌面板底色：深色主题略提亮，浅色主题略压暗，比卡片本身低一层。"""
         return 'rgba(255, 255, 255, 0.045)' if isDarkTheme() else 'rgba(128, 128, 128, 0.055)'
 
-    def _build_plan_activity_card(self) -> 'CompactCardWidget':
+    def _build_plan_activity_card(self, compact: bool = False) -> 'CompactCardWidget':
         """活动与护理：鼓励概率滑块 + 自动喂食 / 自动洗护两张卡。
 
         这里的开关都接真实配置：鼓励概率写 schedule.encourage_probability，
         喂食/洗护写 care.auto_feed / care.auto_bathe 与各自阈值。
+        compact=True 时（放进侧卡区左列）两张护理小卡上下叠放，避免半宽挤成一条。
         """
         cfg = load_config()
         card = CompactCardWidget()
@@ -1771,12 +1773,16 @@ class MainWindow(MSFluentWindow):
         care_row.addWidget(self._unit_spin(interval_spin, '秒'))
         lay.addLayout(care_row)
 
-        # -- 自动喂食 / 自动洗护：并排两张，窄窗口也不换行（各占一半）--
-        care_row = QHBoxLayout()
-        care_row.setSpacing(10)
-        care_row.addWidget(self._build_auto_care_card('feed'), 1)
-        care_row.addWidget(self._build_auto_care_card('bathe'), 1)
-        lay.addLayout(care_row)
+        # -- 自动喂食 / 自动洗护：默认并排两张；放进半宽侧卡区时上下叠放 --
+        if compact:
+            lay.addWidget(self._build_auto_care_card('feed'))
+            lay.addWidget(self._build_auto_care_card('bathe'))
+        else:
+            care_row = QHBoxLayout()
+            care_row.setSpacing(10)
+            care_row.addWidget(self._build_auto_care_card('feed'), 1)
+            care_row.addWidget(self._build_auto_care_card('bathe'), 1)
+            lay.addLayout(care_row)
 
         card.viewLayout.addWidget(body)
         return card
@@ -2142,7 +2148,8 @@ class MainWindow(MSFluentWindow):
             (self._build_moneybag_card(), 1, 0),
             (self._build_plan_task_card('hire_friend', '雇佣好友',
                                         '打工时每次都雇佣第一个好友'), 1, 1),
-            # 被雇佣跟着雇佣好友放右列
+            # 左下角空位放活动与护理，被雇佣跟着雇佣好友放右列
+            (self._build_plan_activity_card(compact=True), 2, 0),
             (self._build_employed_card(), 2, 1),
         ]
         # 两列：卡片本身有最小宽度，三列在默认窗口（约 1200 逻辑宽）下会被挤到窗口外
