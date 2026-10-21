@@ -735,6 +735,24 @@ class FullRegression(unittest.TestCase):
         runner._plan_progress=Mock(return_value=({'school':0},{'school':0}))
         self.assertIsNone(runner._main_choice(tasks,{}))
 
+    def test_moneybag_switch_and_first_check(self):
+        """福袋开关：关掉就不巡检；开着时启动第一次调度立刻检查一次。"""
+        runner=TaskQueueRunner.__new__(TaskQueueRunner)
+        runner.school=Mock()
+        runner._last_cfg=NS(runner=NS(moneybag_enabled=False,
+                                      moneybag_interval_seconds=300))
+        self.assertFalse(runner._try_moneybags())
+
+        runner._last_cfg=NS(runner=NS(moneybag_enabled=True,
+                                      moneybag_interval_seconds=300))
+        runner._moneybag_next=0.0  # __init__ 的初值：启动后第一次就检查
+        with patch('src.moneybag.MoneyBagCollector') as collector:
+            collector.return_value.run.return_value=True
+            collector.return_value.coins=0
+            self.assertTrue(runner._try_moneybags())
+        collector.return_value.run.assert_called_once()
+        self.assertGreater(runner._moneybag_next,0)
+
     def test_recovery_retry_stops_after_success(self):
         r=Runner.__new__(Runner)
         r._run_round=Mock(side_effect=[RuntimeError('test'),True])

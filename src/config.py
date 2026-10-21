@@ -364,6 +364,8 @@ class PlanConfig:
 class RunnerConfig:
     # 调度引擎：task_queue（任务队列调度，默认）/ legacy（老主循环调度）
     engine: str = "task_queue"
+    # 成长福袋巡检开关（默认开）：启动后先检查一次，之后按间隔巡检
+    moneybag_enabled: bool = True
     # 成长福袋巡检间隔（秒）：每次巡检会出门去好友家，别配得太密
     moneybag_interval_seconds: int = 300
 

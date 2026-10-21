@@ -122,6 +122,10 @@ hire_friend:
 # 调度引擎：task_queue（任务队列调度，默认）/ legacy（老主循环调度，可无缝切回）
 runner:
   engine: task_queue
+  # 成长福袋巡检：启动后先检查一次，之后按间隔巡检
+  moneybag_enabled: true
+  # 巡检间隔（秒）：每次巡检会出门去好友家，别配得太密
+  moneybag_interval_seconds: 300
 
 # 任务调度：顺序（> 分隔，越靠前越优先，不在 order 里的任务不调度）+ 每任务调度设置
 # 可选任务名：care(护理) adventure(冒险) visit(踩踩) pk(PK)

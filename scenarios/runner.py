@@ -447,10 +447,13 @@ class Runner:
 
     def _try_moneybags(self) -> bool:
         # Optional, low-frequency work. Never trigger game/device recovery for it.
+        if not bool(getattr(self._last_cfg.runner, 'moneybag_enabled', True)):
+            return False
         from src.moneybag import MoneyBagCollector, INTERVAL
         # 巡检间隔可在「成长福袋」卡片配置（runner.moneybag_interval_seconds）
         interval = max(30, int(getattr(self._last_cfg.runner,
                                        'moneybag_interval_seconds', INTERVAL) or INTERVAL))
+        # _moneybag_next 初值 0：启动后第一次调度就先检查一次，之后按间隔巡检
         if not hasattr(self, '_moneybag_next') or time.monotonic() < self._moneybag_next:
             return False
         self._moneybag_next = time.monotonic() + interval

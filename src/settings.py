@@ -56,6 +56,8 @@ DEFAULTS = {
     'hire_friend.friend_name': '',
     'hire_friend.times_per_day': 8,
     'runner.engine': 'task_queue',
+    'runner.moneybag_enabled': True,
+    'runner.moneybag_interval_seconds': 300,
     'tasks.order': 'svip>care>school>friend_care>hire_friend>adventure>visit>pk>work',
     'tasks.main_order': 'school>hire_friend>adventure>work',
     'tasks.failure_interval': 1800,
@@ -103,7 +105,8 @@ def validate_field(key: str, value):
             return False, DoubleQuotedScalarString(str(default))
     if key == 'friend_care.friend_name' or key == 'hire_friend.friend_name':
         return True, str(value).strip()
-    if key in ('friend_care.enabled', 'hire_friend.enabled', 'employed.enabled'):
+    if key in ('friend_care.enabled', 'hire_friend.enabled', 'employed.enabled',
+               'runner.moneybag_enabled'):
         return (True, value) if isinstance(value, bool) else (False, default)
     if key == 'runner.engine':
         return (True, value) if value in ('task_queue', 'legacy') else (False, default)

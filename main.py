@@ -341,17 +341,6 @@ SETTING_FIELDS = [
     ('notify.onepush_config', '失败告警 OnePush 配置', 'text'),
 ]
 
-# 任务选项卡字段：任务队列顺序 + 各场景任务相关设置
-TASK_SETTING_FIELDS = [
-    # 计划表已经覆盖：tasks.order / main_order / school / work / adventure 的次数与参数；
-    # 时长上限、鼓励次数、护理方式已删除或挪进「活动与护理」卡（2026-10-20）。
-    # 被雇佣/好友护理/雇佣好友 的时间段、名称、次数/间隔已按全天化/自动化移除。
-    ('adventure.skip_bad_weather', '冒险跳过"天色不对"（仅45秒）', 'bool'),
-    ('employed.enabled', '被雇佣开关', 'bool'),
-    ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
-    ('employed.interval_seconds', '被雇佣检查间隔（秒）', 'int'),
-]
-
 # 调度选项卡的任务显示名（任务键定义在 src/config.py 的 TASK_KEYS）
 SCHEDULE_TASK_NAMES = {'care': '护理', 'adventure': '冒险', 'visit': '踩踩', 'pk': 'PK',
                        'hire_friend': '雇佣好友', 'friend_care': '好友护理',
@@ -362,6 +351,7 @@ PLAN_LABELS = {'school': '学习', 'work': '打工', 'adventure': '冒险'}
 PLAN_ATTRIBUTES = ('力量', '智力', '魅力')
 WORK_DURATION_OPTIONS = ('10分钟', '45分钟', '2小时')
 ADVENTURE_DURATION_OPTIONS = ('45秒', '2小时')
+EMPLOYED_ACTIONS = ('等到25/75（小于45min）', '等到25/75', '立刻召回')
 
 
 def _duration_seconds(value: str) -> int:
@@ -1587,10 +1577,6 @@ class MainWindow(MSFluentWindow):
         layout.addWidget(self._build_plan_side_cards())
         layout.addWidget(self._build_plan_activity_card())
         layout.addWidget(self._build_plan_stats_card())
-        # 原来「任务」页的参数（全局规则/冒险细节/护理与好友参数）并到这里，
-        # 计划表覆盖不到的部分不再单独占一个导航页
-        layout.addWidget(StrongBodyLabel('更多设置'))
-        layout.addWidget(self._build_settings_form(TASK_SETTING_FIELDS)[0])
         layout.addStretch(1)
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)
@@ -1970,6 +1956,7 @@ class MainWindow(MSFluentWindow):
             h.addWidget(self._plan_work_duration_combo(item))
         elif item.activity == 'adventure':
             h.addWidget(self._plan_activity_extra(item))
+            h.addWidget(self._plan_adventure_skip_switch())
 
         h.addStretch(1)
 
@@ -2026,6 +2013,26 @@ class MainWindow(MSFluentWindow):
             lambda _i, it=item, c=combo: self._on_plan_text_changed(
                 it, 'adventure_duration', c.currentData()))
         return combo
+
+    def _plan_adventure_skip_switch(self) -> QWidget:
+        """冒险行尾的「跳过天色不对」开关（全局设置，仅 45 秒冒险生效）。"""
+        box = QWidget()
+        h = QHBoxLayout(box)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        label = CaptionLabel('跳过"天色不对"')
+        label.setToolTip('仅 45 秒冒险生效：天色不对就跳过等待，直接结束本次冒险')
+        h.addWidget(label)
+        switch = SwitchButton()
+        switch.setOnText('开')
+        switch.setOffText('关')
+        switch.setToolTip(label.toolTip())
+        switch.setChecked(bool(getattr(load_config().adventure, 'skip_bad_weather', True)))
+        switch.checkedChanged.connect(
+            lambda checked: self._save_schedule_values(
+                {'adventure.skip_bad_weather': bool(checked)}))
+        h.addWidget(switch)
+        return box
 
     def _plan_work_duration_combo(self, item) -> QWidget:
         combo = ComboBox()
@@ -2121,24 +2128,26 @@ class MainWindow(MSFluentWindow):
     # ---- 间隔 / 每日任务卡片 ----
 
     def _build_plan_side_cards(self) -> QWidget:
-        """不占主任务线的功能。护理并进「活动与护理」卡，踩踩/PK 合并成单独一张卡。"""
+        """不占主任务线的功能卡（两列）：左列 SVIP/福袋，右列好友护理/雇佣好友/被雇佣。"""
         wrap = QWidget()
         grid = QGridLayout(wrap)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(10)
         cards = [
-            self._build_plan_task_card('svip', 'SVIP 礼包',
-                                       '每次启动领取一次，无会员/领取失败自动跳过'),
-            self._build_moneybag_card(),
-            self._build_plan_task_card('friend_care', '好友护理',
-                                       '全天按间隔检查，检测到可加经验就一键护理',
-                                       interval=True),
-            self._build_plan_task_card('hire_friend', '雇佣好友',
-                                       '打工时每次都雇佣第一个好友'),
+            (self._build_plan_task_card('svip', 'SVIP 礼包',
+                                        '每次启动领取一次，无会员/领取失败自动跳过'), 0, 0),
+            (self._build_plan_task_card('friend_care', '好友护理',
+                                        '全天按间隔检查，检测到可加经验就一键护理',
+                                        interval=True), 0, 1),
+            (self._build_moneybag_card(), 1, 0),
+            (self._build_plan_task_card('hire_friend', '雇佣好友',
+                                        '打工时每次都雇佣第一个好友'), 1, 1),
+            # 被雇佣跟着雇佣好友放右列
+            (self._build_employed_card(), 2, 1),
         ]
         # 两列：卡片本身有最小宽度，三列在默认窗口（约 1200 逻辑宽）下会被挤到窗口外
-        for i, widget in enumerate(cards):
-            grid.addWidget(widget, i // 2, i % 2)
+        for widget, row, col in cards:
+            grid.addWidget(widget, row, col)
         for col in range(2):
             grid.setColumnStretch(col, 1)
         return wrap
@@ -2295,20 +2304,25 @@ class MainWindow(MSFluentWindow):
         return card
 
     def _build_moneybag_card(self) -> QWidget:
-        """成长福袋：按间隔巡检好友家福袋（间隔可配），不占计划条目。"""
+        """成长福袋：开关 + 巡检间隔（启动时先检查一次，之后按间隔巡检）。"""
+        cfg = load_config()
         card = SimpleCardWidget()
         lay = QVBoxLayout(card)
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(6)
-        lay.addWidget(StrongBodyLabel('成长福袋'))
-        tip = CaptionLabel('按间隔巡检好友家福袋，不占用计划条目')
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
-        try:
-            coins = load_moneybag_stats()['coins']
-        except Exception:
-            coins = 0
-        lay.addWidget(self._plan_param_row('今日累计', StrongBodyLabel(f'{coins} 金币')))
+
+        head = QHBoxLayout()
+        head.addWidget(StrongBodyLabel('成长福袋'), 1)
+        switch = SwitchButton()
+        switch.setOnText('开')
+        switch.setOffText('关')
+        switch.setChecked(bool(getattr(cfg.runner, 'moneybag_enabled', True)))
+        switch.checkedChanged.connect(
+            lambda checked: self._save_schedule_values(
+                {'runner.moneybag_enabled': bool(checked)}))
+        head.addWidget(switch)
+        lay.addLayout(head)
+
         spin = _NoWheelSpinBox()
         spin.setRange(30, 86400)
         spin.setValue(max(30, int(getattr(load_config().runner,
@@ -2316,6 +2330,54 @@ class MainWindow(MSFluentWindow):
         spin.valueChanged.connect(
             lambda v: self._save_schedule_values({'runner.moneybag_interval_seconds': int(v)}))
         lay.addWidget(self._plan_param_row('巡检间隔', self._unit_spin(spin, '秒')))
+        lay.addStretch(1)
+        return card
+
+    def _build_employed_card(self) -> QWidget:
+        """被雇佣：开关 + 处理策略 + 检查间隔（放在雇佣好友旁的侧卡区）。"""
+        cfg = load_config()
+        card = SimpleCardWidget()
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(6)
+
+        head = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title_box.setContentsMargins(0, 0, 0, 0)
+        title_box.setSpacing(1)
+        title_box.addWidget(StrongBodyLabel('被雇佣'))
+        tip = CaptionLabel('全天检查是否被好友雇佣，按策略召回')
+        tip.setWordWrap(True)
+        title_box.addWidget(tip)
+        head.addLayout(title_box, 1)
+        switch = SwitchButton()
+        switch.setOnText('开')
+        switch.setOffText('关')
+        switch.setChecked(bool(cfg.employed.enabled))
+        switch.checkedChanged.connect(
+            lambda checked: self._save_schedule_values({'employed.enabled': bool(checked)}))
+        head.addWidget(switch)
+        lay.addLayout(head)
+
+        combo = ComboBox()
+        for action in EMPLOYED_ACTIONS:
+            combo.addItem(action, userData=action)
+        current = cfg.employed.action
+        if current not in EMPLOYED_ACTIONS:
+            combo.addItem(current, userData=current)  # 老配置里的自定义策略兜底
+        combo.setCurrentIndex(max(0, combo.findData(current)))
+        combo.setMinimumWidth(150)
+        combo.currentIndexChanged.connect(
+            lambda _i, c=combo: self._save_schedule_values(
+                {'employed.action': c.currentData()}))
+        lay.addWidget(self._plan_param_row('被雇佣后处理', combo))
+
+        spin = _NoWheelSpinBox()
+        spin.setRange(10, 86400)
+        spin.setValue(max(10, int(cfg.employed.interval_seconds)))
+        spin.valueChanged.connect(
+            lambda v: self._save_schedule_values({'employed.interval_seconds': int(v)}))
+        lay.addWidget(self._plan_param_row('检查间隔', self._unit_spin(spin, '秒')))
         lay.addStretch(1)
         return card
 
