@@ -17,7 +17,8 @@ from tools.test_care_regression import CareRegression
 from src.ocr import ocr_fullscreen, parse_panel_location, parse_employed_remaining
 from src.settings import WORK_LOCATIONS, validate_field
 from src import progress_store as store
-from src.config import load_config
+from src.config import (MAIN_TASK_KEYS, Config, PlanConfig, PlanItemConfig,
+                        load_config)
 from scenarios.work import WorkScenario
 from scenarios.school import SchoolScenario
 from scenarios.adventure import AdventureScenario
@@ -293,6 +294,7 @@ class FullRegression(unittest.TestCase):
                         target.unlink(missing_ok=True)
                         sc=FriendHireScenario.__new__(FriendHireScenario)
                         sc.dev=Mock(); sc.defer_wait=deferred
+                        sc.cfg=NS(work=NS(location='风铃旅社',duration=duration))
                         for method in ('_enter_work_panel','_select_job','defer_busy_end','ensure_main_page'):
                             setattr(sc,method,Mock())
                         work=Mock(duration=duration)
@@ -667,7 +669,7 @@ class FullRegression(unittest.TestCase):
         for ready in (False,True):
             sc=EmployedScenario.__new__(EmployedScenario)
             sc.cfg=NS(employed=NS(action='等到25/75'))
-            sc.ensure_main_page=Mock(); sc.leave_home=Mock(); sc.screen=Mock()
+            sc.ensure_main_page=Mock(); sc.leave_home=Mock(return_value=None); sc.screen=Mock()
             sc.see=Mock(return_value=True); sc.employed_recall_ready=Mock(return_value=ready)
             sc._recall_employed=Mock()
             self.assertTrue(sc.run())
@@ -689,9 +691,49 @@ class FullRegression(unittest.TestCase):
                 self.assertFalse(runner._eligible(task,now))
                 task.cfg.enabled=True; task.next_at=now+timedelta(seconds=60)
                 self.assertFalse(runner._eligible(task,now))
+                # 没有每日时间点了：daily 配置不再"打开执行窗口"，dead 就是当天不可继续
+                task.next_at=datetime.min
                 task.cfg.trigger='daily'; task.cfg.daily_times=['11:00']; task.dead=True
-                self.assertTrue(runner._eligible(task,now))
-                self.assertFalse(task.dead)
+                self.assertFalse(runner._eligible(task,now))
+
+    def test_plan_drives_main_choice(self):
+        """主任务组由计划表第一条未完成条目决定，与每日时间点无关。"""
+        runner=TaskQueueRunner.__new__(TaskQueueRunner)
+        runner._main_pending_scen=Mock(return_value=None)
+        runner._main_order=list(MAIN_TASK_KEYS)
+        tasks={key:_QueueTask(key) for key in ('school','work','hire_friend','adventure')}
+        cfg=Config()
+        cfg.plan=PlanConfig(enabled=True, items=[
+            PlanItemConfig(activity='school', mode='count', count=2),
+            PlanItemConfig(activity='work', mode='duration', hours=1.0),
+        ])
+        runner._last_cfg=cfg
+        runner._plan_progress=Mock(return_value=({'school':0,'work':0,'adventure':0},
+                                                 {'school':0,'work':0,'adventure':0}))
+        self.assertEqual(runner._main_choice(tasks,{}),'school')
+        # 学习做完 -> 打工条目：优先雇佣好友
+        runner._plan_progress=Mock(return_value=({'school':2,'work':0,'adventure':0},
+                                                 {'school':1200,'work':0,'adventure':0}))
+        self.assertEqual(runner._main_choice(tasks,{}),'hire_friend')
+        # 雇佣好友当天不可继续 -> 普通打工兜底
+        tasks['hire_friend'].dead=True
+        self.assertEqual(runner._main_choice(tasks,{}),'work')
+        # 全部条目完成 -> 不调度主任务
+        runner._plan_progress=Mock(return_value=({'school':2,'work':3,'adventure':0},
+                                                 {'school':1200,'work':3600,'adventure':0}))
+        self.assertIsNone(runner._main_choice(tasks,{}))
+
+    def test_plan_disabled_stops_main_tasks(self):
+        """自动控制停用（plan.enabled=False）：不按计划执行主任务。"""
+        runner=TaskQueueRunner.__new__(TaskQueueRunner)
+        runner._main_pending_scen=Mock(return_value=None)
+        runner._main_order=list(MAIN_TASK_KEYS)
+        tasks={key:_QueueTask(key) for key in ('school','work','hire_friend','adventure')}
+        cfg=Config(); cfg.plan=PlanConfig(enabled=False, items=[
+            PlanItemConfig(activity='school', mode='count', count=2)])
+        runner._last_cfg=cfg
+        runner._plan_progress=Mock(return_value=({'school':0},{'school':0}))
+        self.assertIsNone(runner._main_choice(tasks,{}))
 
     def test_recovery_retry_stops_after_success(self):
         r=Runner.__new__(Runner)
@@ -787,8 +829,49 @@ class FullRegression(unittest.TestCase):
 
     def test_notifications_failure_is_contained(self):
         from src.notify import send_alert
-        with patch('src.notify.load_config',return_value=NS(notify=NS(win_toast=True,onepush_config=''))), patch('src.notify._send_windows_toast',side_effect=RuntimeError('test')):
+        with patch('src.notify.load_config',return_value=NS(notify=NS(win_toast=True,onepush_config='',pushplus_token=''))), patch('src.notify._send_windows_toast',side_effect=RuntimeError('test')):
             self.assertFalse(send_alert('本地测试，不对外发送'))
+
+    def test_pushplus_alert_uses_configured_token(self):
+        """配置了 pushplus_token 就走 pushplus 通道（不依赖 win_toast/onepush_config）。"""
+        from src import notify
+        token = 'T'*32
+        calls=[]
+        with patch('src.notify.load_config',return_value=NS(notify=NS(win_toast=False,onepush_config='',pushplus_token=token))), \
+             patch('src.notify._onepush_notify',side_effect=lambda cfg,reason,image_path=None: calls.append(cfg) or True):
+            self.assertTrue(notify.send_alert('本地测试，不对外发送'))
+        self.assertEqual(calls,[{'provider':'pushplus','token':token}])
+
+    def test_pushplus_token_falls_back_to_env(self):
+        """配置留空时读环境变量 PUSHPLUS_TOKEN。"""
+        from src import notify
+        token = 'E'*32
+        calls=[]
+        with patch.dict(os.environ,{'PUSHPLUS_TOKEN':token}), \
+             patch('src.notify.load_config',return_value=NS(notify=NS(win_toast=False,onepush_config='',pushplus_token=''))), \
+             patch('src.notify._onepush_notify',side_effect=lambda cfg,reason,image_path=None: calls.append(cfg) or True):
+            self.assertTrue(notify.send_alert('本地测试，不对外发送'))
+        self.assertEqual(calls,[{'provider':'pushplus','token':token}])
+
+    def test_pushplus_not_sent_twice_when_onepush_already_pushplus(self):
+        """onepush_config 已经是 pushplus 时不再额外推一条，避免一次告警收两条。"""
+        from src import notify
+        calls=[]
+        with patch('src.notify.load_config',return_value=NS(notify=NS(win_toast=False,onepush_config='{provider: pushplus, token: abc}',pushplus_token='T'*32))), \
+             patch('src.notify._onepush_notify',side_effect=lambda cfg,reason,image_path=None: calls.append(cfg) or True):
+            self.assertTrue(notify.send_alert('本地测试，不对外发送'))
+        self.assertEqual(calls,[{'provider':'pushplus','token':'abc'}])
+
+    def test_pushplus_failure_log_does_not_leak_token(self):
+        """推送异常文本里万一带上 token，进日志前必须抹掉。"""
+        from src import notify
+        token = 'S'*32
+        logs=[]
+        with patch('src.notify.log',side_effect=lambda msg: logs.append(str(msg))), \
+             patch('onepush.get_notifier',side_effect=RuntimeError(f'boom {token}')):
+            self.assertFalse(notify._onepush_notify({'provider':'pushplus','token':token},'告警'))
+        self.assertTrue(logs)
+        self.assertFalse(any(token in m for m in logs), logs)
 
     def test_main_page_rejects_care_panel_overlay(self):
         """洗澡页误判回归：护理面板盖在主页上时不算可操作的主页。

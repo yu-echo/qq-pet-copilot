@@ -405,3 +405,46 @@ def parse_employed_remaining(
         return None
     _, secs, x, y, score = best
     return secs, x, y, score
+
+
+# 忙碌主页面底部活动进度条：活动标签 -> 内部活动类型。
+# 宠物学习/打工/冒险中时主页没有"出门"按钮，底部换成"活动名 + HH:MM:SS 倒计时"。
+HOME_BUSY_LABELS = {'学习': 'school', '打工': 'work', '冒险': 'adventure'}
+
+
+def parse_home_busy(
+    results: list[tuple[str, int, int, float]],
+    screen_height: int | None = None,
+) -> tuple[str, int, int, int, float] | None:
+    """解析主页面底部活动进度条（宠物学习/打工/冒险中：主页没有"出门"按钮，
+    底部换成"活动名 + HH:MM:SS 倒计时"，如「学习 00:26:46」）。
+
+    只在下半屏找标签和裸 HH:MM:SS（状态栏时钟是 HH:MM，不会命中；上半屏的
+    任务/提示文字也不会误配）。标签与时间同一文本块，或标签在同一行相邻的
+    另一个块内都算命中。返回 (活动类型, 剩余秒数, x, y, 置信度) 或 None。
+    """
+    time_re = re.compile(r'(\d{1,2}):(\d{2}):(\d{2})')
+    bottom = screen_height * 0.55 if screen_height else 0
+    rows = [(t.replace(' ', ''), x, y, s) for t, x, y, s in results if y >= bottom]
+    for text, x, y, score in rows:
+        kind = next((k for label, k in HOME_BUSY_LABELS.items() if label in text), None)
+        if kind is None:
+            continue
+        m = time_re.search(text)
+        if m:
+            secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+            return kind, secs, x, y, score
+        # 时间在同行相邻块：取离标签最近的时间（进度条高度有限，纵坐标容差 60px）
+        best: tuple[int, int, int, int, float] | None = None
+        for text2, x2, y2, score2 in rows:
+            m2 = time_re.search(text2)
+            if not m2 or abs(y2 - y) > 60:
+                continue
+            d = abs(x2 - x)
+            if best is None or d < best[0]:
+                secs = int(m2.group(1)) * 3600 + int(m2.group(2)) * 60 + int(m2.group(3))
+                best = (d, secs, x2, y2, score2)
+        if best is not None:
+            _d, secs, x2, y2, score2 = best
+            return kind, secs, x2, y2, score2
+    return None

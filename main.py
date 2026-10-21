@@ -346,6 +346,7 @@ SETTING_FIELDS = [
     ('schedule.back_method', '返回方式', ['系统返回', '返回图标']),
     ('recover.method', '异常处理方式', ['重启设备', '重启游戏']),
     ('notify.win_toast', '失败告警 Windows 通知', 'bool'),
+    ('notify.pushplus_token', '失败告警 PushPlus token', 'str'),
     ('notify.onepush_config', '失败告警 OnePush 配置', 'text'),
 ]
 
@@ -3129,8 +3130,9 @@ class MainWindow(MSFluentWindow):
             value = w.text().strip()
         ok, fixed = settings_io.validate_field(key, value)
         if not ok:
-            # notify.onepush_config 里是 webhook 地址与推送 key，原值不进日志
-            shown = '（已省略）' if key == 'notify.onepush_config' else repr(value)
+            # onepush_config / pushplus_token 里是 webhook 地址与推送凭据，原值不进日志
+            shown = '（已省略）' if key in (
+                'notify.onepush_config', 'notify.pushplus_token') else repr(value)
             log(f'配置 {key} 的值 {shown} 无效，已恢复默认值 {fixed!r}')
             w.blockSignals(True)  # 恢复默认值不再触发一次保存
             if kind == 'devices':

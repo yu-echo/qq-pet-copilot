@@ -70,6 +70,7 @@ DEFAULTS = {
     'employed.action': '等到25/75（小于45min）',
     'notify.win_toast': True,
     'notify.onepush_config': '',
+    'notify.pushplus_token': '',
 }
 
 
@@ -175,6 +176,9 @@ def validate_field(key: str, value):
             return (True, value) if int(value) >= 0 else (False, default)
         except (TypeError, ValueError):
             return False, default
+    if key == 'notify.pushplus_token':
+        # PushPlus token：留空或去空格原值（服务端格式可能调整，不校验长度）
+        return True, str(value or '').strip()
     return True, value
 
 

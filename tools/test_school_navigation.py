@@ -16,7 +16,7 @@ class SchoolNavigationRegression(unittest.TestCase):
         s = SchoolScenario.__new__(SchoolScenario)
         s._graduated_once = False
         s.dev = SimpleNamespace(hierarchy=Mock(side_effect=frames))
-        s.leave_home = Mock()
+        s.leave_home = Mock(return_value=None)
         s.wait_busy_end = Mock(return_value=None)
         s.handle_low_stat_dialog = Mock()
         s._recheck_busy_after_nav = Mock(return_value=None)

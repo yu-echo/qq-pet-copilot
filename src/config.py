@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import copy
@@ -265,6 +266,15 @@ PLAN_MODES = ('count', 'duration')          # 按次数 / 按时长
 PLAN_ATTRIBUTES = ('力量', '智力', '魅力')
 
 
+def duration_seconds(value) -> int:
+    """把「45秒 / 10分钟 / 2小时」换算成秒（识别不了按 0 处理）。"""
+    match = re.fullmatch(r'\s*(\d+)\s*(秒|分钟|小时)\s*', str(value or ''))
+    if not match:
+        return 0
+    amount = int(match.group(1))
+    return amount * {'秒': 1, '分钟': 60, '小时': 3600}[match.group(2)]
+
+
 @dataclass
 class PlanItemConfig:
     """每日活动计划的一条（config.yaml 的 plan[] 元素）。
@@ -385,6 +395,9 @@ class NotifyConfig:
     win_toast: bool = True
     # OnePush 推送配置（YAML，支持多行），如 {provider: bark, key: xxx}；留空不推送
     onepush_config: str = ""
+    # PushPlus 推送 token（常用告警渠道，设置页可填）：
+    # 留空则读环境变量 PUSHPLUS_TOKEN；值为敏感信息，日志/界面只显示是否已配置
+    pushplus_token: str = ""
 
 
 @dataclass

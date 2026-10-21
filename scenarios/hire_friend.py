@@ -137,6 +137,11 @@ class FriendHireScenario(FriendCareScenario):
         等打工结束点 quit（不做打工流程里的雇佣部分，由调用方计数）。"""
         self._enter_work_panel()
         work = WorkScenario(self.dev)
+        # 打工地点/时长以本场景的 cfg.work 为准：调度器的计划条目会临时覆盖它们
+        # （计划表里配的打工地点/单次时长），内联创建的 WorkScenario 读的是磁盘
+        # 配置，这里同步一次，保证和计划条目一致
+        work.location = self.cfg.work.location
+        work.duration = self.cfg.work.duration
         # 打工地点处理跟打工流程完全一致（select_place）：当前面板已是配置地点就直接用；
         # 不是则走重选分支——back 重置 -> OCR 找配置地点 -> 点击进入，仍不行回主页面
         # 重新进小镇再选（此时 hire 已生效/CD 已起，重选的是自己干活的打工面板）

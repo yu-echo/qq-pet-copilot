@@ -2,6 +2,8 @@
 
 渠道（config.yaml 的 notify 段配置，可叠加，任一成功即算送达）：
 - Windows Toast 桌面通知：notify.win_toast: true（需 winotify）
+- PushPlus 推送：notify.pushplus_token 填 token（留空则读环境变量
+  PUSHPLUS_TOKEN）；token 属敏感信息，日志只记「已配置/未配置」，绝不打印
 - OnePush 推送：notify.onepush_config 填 YAML（设置页是多行输入框），
   支持 Bark / PushPlus / Server酱 / Telegram / SMTP / 自定义 webhook 等
   onepush 提供方，例如：
@@ -38,6 +40,11 @@ def send_alert(reason: str, image_path: str | None = None) -> bool:
             sent = _send_windows_toast(reason, image_path) or sent
         if str(cfg.onepush_config).strip():
             sent = _send_onepush(str(cfg.onepush_config), reason, image_path) or sent
+        token = _pushplus_token(cfg)
+        # onepush_config 里已经写了 pushplus 时不重复推（否则一次告警收两条）
+        if token and _onepush_provider(str(cfg.onepush_config)) != 'pushplus':
+            sent = _onepush_notify(
+                {'provider': 'pushplus', 'token': token}, reason, image_path) or sent
         if not sent:
             log('告警通知: 未发送成功（未配置渠道或发送失败，详见上方日志）')
         return sent
@@ -76,6 +83,24 @@ def _send_windows_toast(reason: str, image_path: str | None = None) -> bool:
         return False
 
 
+def _pushplus_token(cfg: NotifyConfig) -> str:
+    """取 PushPlus token：配置优先，其次环境变量 PUSHPLUS_TOKEN；都不打印。"""
+    return str(cfg.pushplus_token or '').strip() or os.environ.get('PUSHPLUS_TOKEN', '').strip()
+
+
+def _onepush_provider(config_text: str) -> str:
+    """尽力读出 onepush_config 里的 provider（小写），解析不了返回空串。"""
+    import yaml
+
+    try:
+        data = yaml.safe_load(str(config_text or '').strip())
+    except Exception:
+        return ''
+    if not isinstance(data, dict):
+        return ''
+    return str(data.get('provider') or '').strip().lower()
+
+
 def _send_onepush(config_text: str, reason: str, image_path: str | None = None) -> bool:
     """发送 OnePush 通知。config_text 为单行 YAML（flow 格式），必须含 provider。"""
     import yaml
@@ -88,11 +113,17 @@ def _send_onepush(config_text: str, reason: str, image_path: str | None = None) 
     if not isinstance(cfg, dict):
         log('告警通知: OnePush 配置不是字典，跳过推送')
         return False
+    return _onepush_notify(dict(cfg), reason, image_path)
+
+
+def _onepush_notify(cfg: dict, reason: str, image_path: str | None = None) -> bool:
+    """按已解析的 onepush 配置发送（cfg 里的 provider 会被取走）。"""
     cfg = dict(cfg)
     provider = str(cfg.pop('provider', '') or '').strip()
     if not provider:
         log('告警通知: OnePush 未配置 provider，跳过推送')
         return False
+    secret = str(cfg.get('token') or cfg.get('key') or '')
     try:
         from onepush import get_notifier
         from onepush.providers.custom import Custom
@@ -128,5 +159,8 @@ def _send_onepush(config_text: str, reason: str, image_path: str | None = None) 
         return True
     except Exception as e:
         detail = str(e).strip() or repr(e)
+        if secret:
+            # 异常文本里万一带上 token/key，先抹掉再进日志
+            detail = detail.replace(secret, '***')
         log(f'告警通知: OnePush 推送失败（{provider}）: {type(e).__name__}: {detail}')
         return False

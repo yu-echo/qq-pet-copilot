@@ -223,6 +223,9 @@ notify:
   # 场景多次重试仍失败时的告警通知（主任务通知后调度器退出，需人工查看）
   # Windows 桌面 Toast 通知：true/false
   win_toast: true
+  # PushPlus 推送 token（pushplus.plus 微信推送，最常用的手机告警渠道）：
+  # 留空则读环境变量 PUSHPLUS_TOKEN；token 属敏感信息，日志只记是否已配置
+  pushplus_token: ""
   # OnePush 推送配置（YAML，设置页里是多行输入框；留空不推送），
   # 支持 Bark / PushPlus / Server酱 / Telegram / SMTP / 自定义 webhook 等，例如：
   #   onepush_config: "{provider: bark, key: 你的Key}"
