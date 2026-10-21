@@ -226,10 +226,11 @@ MAIN_TASK_KEYS = ('adventure', 'school', 'hire_friend', 'work')
 class TaskItemConfig:
     # 单个任务的调度设置（config.yaml 的 tasks.<任务名> 段）
     enabled: bool = True
-    # trigger: interval=按间隔秒数 / daily=按每日时间点列表（到点打开一个执行窗口）
+    # trigger: interval=按间隔秒数；daily 与 daily_times 仅为兼容旧配置保留，
+    # 调度器已不再按每日时间点开窗（2026-10-21 起只按开关/时间窗/当天配额/退避判定）
     trigger: str = "interval"
     interval_seconds: int = 60
-    daily_times: list = field(default_factory=list)  # HH:MM 列表
+    daily_times: list = field(default_factory=list)  # HH:MM 列表（兼容字段，已不生效）
     # 允许执行的时间窗（HH:MM:SS-HH:MM:SS）
     enabled_time_range: str = "00:00:00-23:59:59"
     # 成功/失败后距下次执行的最小间隔（秒）
