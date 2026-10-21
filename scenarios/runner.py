@@ -758,21 +758,21 @@ def _in_clock_range(now, start, end) -> bool:
 
 
 class TaskQueueRunner(Runner):
-    """任务队列调度：按 config.yaml 的 tasks.order 顺序扫描，执行第一个可执行的任务。
+    """计划表驱动的调度器：先按 plan.items 循环执行主任务，间隙补间隔任务。
 
     与 legacy 主循环的差异：
-    - 执行顺序完全由 tasks.order 配置（> 分隔，越靠前越优先），不在 order 里的任务不调度；
+    - **主任务由每日计划表决定**（plan.items 第一条没做完的条目），tasks.order
+      只决定支线任务的先后；
     - 每个任务有独立的调度设置（tasks.<任务名>）：enabled 开关、
       enabled_time_range 执行时间窗、success_interval / failure_interval 成功/失败退避；
       **没有每日时间点**——任务到点与否只看开关、时间窗、当天配额和退避；
     - 冒险/学习/打工/雇佣好友互斥（共用"出门-进行中"一条线，不能同时做），作为**主任务组
-      统一调度**：做什么由**每日计划表 plan.items** 决定——按列表顺序找第一条没做完的
-      （按次数/按时长，口径与 GUI 计划页一致），条目是学习/冒险就执行对应任务、
-      是打工就优先雇佣好友（打工时每次都雇佣）再普通打工兜底；条目全部完成（或计划
-      停用）主任务组当天结束，调度器只等支线退避后退出；
-    - 计划表的**间隙**（进行中活动的延时收尾等待、成功后的退避间隔）跑支线任务：
-      踩踩/PK/好友护理/护理等按各自的配额与间隔插空执行，不需要出门的任务还能在
-      宠物学习/打工/冒险期间照常跑；
+      统一调度**：按列表顺序找第一条没做完的（按次数/按时长，口径与 GUI 计划页一致），
+      条目是学习/冒险就执行对应任务、是打工就优先雇佣好友（打工时每次都雇佣）再普通
+      打工兜底；条目全部完成（或计划停用）主任务组当天结束，调度器只等支线退避后退出；
+    - 每轮**先跑计划当前条目的主任务**，跑不了（进行中延时收尾/退避/当天不可继续）
+      才补间隔任务：护理（活动前置）-> 成长福袋 -> SVIP/好友护理/踩踩/PK；
+      不需要出门的任务还能在宠物学习/打工/冒险期间照常跑；
     - 主任务组**非阻塞等待**（延时收尾）：出发后识别到进行中状态（"正在学习"等）时
       OCR 剩余时间登记场景的 pending，立即回主页面调度其他任务；到点由 _main_choice 调
       finish_pending() 收尾计数后再选下一个计划条目；组内有 pending 且未到收尾时间时
@@ -806,7 +806,8 @@ class TaskQueueRunner(Runner):
         # 复查也在这里做（恢复会员自动重开任务），之后不再按每日时间点调度
         self._svip_nonmember_recheck()
         self._svip_startup_claim()
-        log(f'任务队列调度已启用，执行顺序: {" > ".join(TASK_NAMES[k] for k in order)}')
+        log('调度已启用：先按每日计划表循环执行主任务，'
+            '计划间隙/等待时执行护理、好友护理、踩踩、PK 等间隔任务')
         while True:
             try:
                 # 热修改：每轮调度前重读配置（含 tasks.order 与各任务调度设置）
@@ -963,9 +964,10 @@ class TaskQueueRunner(Runner):
         ctx['plan_progress'] = (counts, seconds)
         return counts, seconds
 
-    def _plan_current(self, ctx: dict):
+    def _plan_current(self, ctx: dict, quiet: bool = False):
         """计划表里第一条没做完的条目（口径同 GUI：按次数 done<count，
-        按时长 seconds<hours*3600）；全部完成或计划停用返回 None。"""
+        按时长 seconds<hours*3600）；全部完成或计划停用返回 None。
+        quiet=True 时不打"今日计划已完成"（状态刷新等旁路调用用）。"""
         plan = getattr(self._last_cfg, 'plan', None)
         if plan is None or not plan.enabled or not plan.items:
             return None
@@ -985,7 +987,7 @@ class TaskQueueRunner(Runner):
                 item = plan_item
                 break
         ctx['plan_item'] = item
-        if item is None:
+        if item is None and not quiet:
             log('今日计划已完成（所有条目都达到目标）')
         return item
 
@@ -1138,8 +1140,12 @@ class TaskQueueRunner(Runner):
         return None
 
     def _run_first_due(self, tasks: dict, order: list) -> bool:
-        """按 order 扫描，执行第一个可执行的任务，返回是否执行了任务。
-        被雇佣检查不在 tasks.order 里：到点优先于队列任务先检查。"""
+        """执行一轮：**计划表优先**，计划主任务跑不了时才补间隔任务。
+
+        顺序：被雇佣检查 -> pending 收尾 -> 护理（活动前置）-> 当前计划条目的主任务
+        -> 成长福袋 -> 其余间隔/支线任务（SVIP/好友护理/踩踩/PK）。
+        tasks.order 现在只决定支线的先后，主任务由计划表决定。
+        """
         now = datetime.now()
         if self.employed_due():
             self._run_employed_check(tasks, order, now)
@@ -1150,14 +1156,25 @@ class TaskQueueRunner(Runner):
             return True
         if pend_act == 'wait':
             return False  # 本轮不执行任务 -> _sleep_until_next 睡到收尾点
-        # 成长福袋不受踩踩配额影响；学习/打工一分钟内要收尾时让路。
-        pend = self._main_pending_scen()
+        # 1) 护理是活动前置：体力/清洁不够直接开活动会白跑一轮
         care = tasks.get('care')
-        care_ready = care is not None and self._eligible(care, now) and self.care_due()
-        if not care_ready and (pend is None or (pend.pending['until']-now).total_seconds() > 60):
+        if care is not None and self._eligible(care, now) and self.care_due():
+            self._execute(care, tasks, now, order)
+            return True
+        ctx: dict = {}  # 本轮循环的 点数/金币 缓存（_main_choice 用）
+        # 2) 计划表当前条目的主任务：优先于所有零散任务
+        main_key = self._main_choice(tasks, ctx)
+        if main_key is not None:
+            task = tasks.get(main_key)
+            if task is not None and self._eligible(task, now):
+                self._execute(task, tasks, now, order)
+                return True
+        # 3) 成长福袋不受踩踩配额影响；学习/打工一分钟内要收尾时让路。
+        pend = self._main_pending_scen()
+        if pend is None or (pend.pending['until'] - now).total_seconds() > 60:
             if self._try_moneybags():
                 return True
-        ctx: dict = {}  # 本轮循环的 点数/金币 缓存（_main_due 用）
+        # 4) 其余间隔/支线任务
         for key in order:
             task = tasks[key]
             if not self._eligible(task, now):
@@ -1318,6 +1335,16 @@ class TaskQueueRunner(Runner):
             until = pend.pending['until']
             if next_at is None or until < next_at:
                 next_at, next_name = until, f'{pending_desc}收尾'
+        # 计划表当前条目现在就能跑时，"下一任务"就是它——计划优先于支线重试点，
+        # 否则界面会显示"护理 00:38:33"这种支线时间点，看着像旧队列逻辑
+        if self._main_pending_scen() is None:
+            item = self._plan_current({}, quiet=True)
+            if item is not None:
+                keys = self._work_executors() if item.activity == 'work' else [item.activity]
+                for key in keys:
+                    if key in tasks and self._executor_ready(key, tasks, now):
+                        next_at, next_name = None, f'{TASK_NAMES.get(key, key)}（计划条目）'
+                        break
         save_queue_status({
             'current': self._current_task or '',
             'pending': pending_desc,

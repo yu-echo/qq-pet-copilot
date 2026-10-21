@@ -753,6 +753,54 @@ class FullRegression(unittest.TestCase):
         collector.return_value.run.assert_called_once()
         self.assertGreater(runner._moneybag_next,0)
 
+    def test_plan_main_task_runs_before_side_tasks(self):
+        """计划表优先：主任务可跑时，踩踩/PK 等支线不能插到前面。"""
+        runner=TaskQueueRunner.__new__(TaskQueueRunner)
+        runner.employed_due=Mock(return_value=False)
+        runner._pending_finish_first=Mock(return_value=None)
+        runner._eligible=Mock(return_value=True)
+        runner.care_due=Mock(return_value=False)
+        runner._main_choice=Mock(return_value='school')
+        runner._main_pending_scen=Mock(return_value=None)
+        runner._try_moneybags=Mock(return_value=False)
+        runner._task_due=Mock(return_value=True)
+        runner._execute=Mock()
+        tasks={k:NS(name=k) for k in ('care','school','visit')}
+        self.assertTrue(runner._run_first_due(tasks,['care','school','visit']))
+        self.assertIs(runner._execute.call_args[0][0], tasks['school'])
+
+    def test_side_task_runs_when_plan_item_not_ready(self):
+        """计划条目跑不了（进行中/退避）时才轮到 tasks.order 里的支线。"""
+        runner=TaskQueueRunner.__new__(TaskQueueRunner)
+        runner.employed_due=Mock(return_value=False)
+        runner._pending_finish_first=Mock(return_value=None)
+        runner._eligible=Mock(return_value=True)
+        runner.care_due=Mock(return_value=False)
+        runner._main_choice=Mock(return_value=None)
+        runner._main_pending_scen=Mock(return_value=None)
+        runner._try_moneybags=Mock(return_value=False)
+        runner._task_due=Mock(side_effect=lambda k,t,c: k=='visit')
+        runner._execute=Mock()
+        tasks={k:NS(name=k) for k in ('care','school','visit')}
+        self.assertTrue(runner._run_first_due(tasks,['care','school','visit']))
+        self.assertIs(runner._execute.call_args[0][0], tasks['visit'])
+
+    def test_care_runs_before_plan_task(self):
+        """护理是活动前置：低于阈值时先喂食/洗澡，再开计划主任务。"""
+        runner=TaskQueueRunner.__new__(TaskQueueRunner)
+        runner.employed_due=Mock(return_value=False)
+        runner._pending_finish_first=Mock(return_value=None)
+        runner._eligible=Mock(return_value=True)
+        runner.care_due=Mock(return_value=True)
+        runner._main_choice=Mock(return_value='school')
+        runner._main_pending_scen=Mock(return_value=None)
+        runner._try_moneybags=Mock(return_value=False)
+        runner._task_due=Mock(return_value=True)
+        runner._execute=Mock()
+        tasks={k:NS(name=k) for k in ('care','school')}
+        self.assertTrue(runner._run_first_due(tasks,['care','school']))
+        self.assertIs(runner._execute.call_args[0][0], tasks['care'])
+
     def test_recovery_retry_stops_after_success(self):
         r=Runner.__new__(Runner)
         r._run_round=Mock(side_effect=[RuntimeError('test'),True])
