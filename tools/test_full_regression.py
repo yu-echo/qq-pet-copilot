@@ -922,6 +922,30 @@ class FullRegression(unittest.TestCase):
                               (540, 240, 1.0) if n in ('main_sign', overlay) else None):
                 self.assertIsNone(sc._on_main_page(), overlay)
 
+    def test_home_busy_parses_stacked_label_and_timer(self):
+        """真机版面：'打工' 与 '00:27:03' 是上下两块，纵坐标差 67px 也要认出来。"""
+        from src.ocr import parse_home_busy
+        results=[('打工',600,2460,1.0),('00:27:03',600,2527,1.0)]
+        self.assertEqual(parse_home_busy(results,2670)[:2],('work',1623))
+        # 上半屏的同名文字不参与（避免把任务列表里的"打工"当成进度条）
+        self.assertIsNone(parse_home_busy([('打工',600,400,1.0),('00:27:03',600,460,1.0)],2670))
+
+    def test_leave_home_detects_busy_after_click_has_no_effect(self):
+        """忙碌主页仍能匹配到"出门"且点了没反应：不能连点三次告警退出，要按忙碌态处理。"""
+        from src.scenario import DeviceScenario
+        dev=Mock(); dev.current_package.return_value='com.tencent.mobileqq'
+        sc=DeviceScenario(dev=dev); sc.defer_wait=True
+        screen=Mock(); screen.shape=(2670,1200,3)
+        sc.snapshot=Mock(return_value=(screen,'ocr'))
+        sc.see=Mock(return_value=(600,2500,1.0))
+        sc.click=Mock()
+        sc._on_main_page=Mock(return_value=(540,240,1.0))  # 点完还停在主页面
+        sc.detect_home_busy=Mock(return_value=('work',1234))
+        self.assertEqual(sc.leave_home(),'work')
+        sc.click.assert_called_once()
+        self.assertIsNotNone(sc.pending)
+        self.assertGreater(sc.pending['until'],__import__('datetime').datetime.now())
+
     def test_leave_home_has_no_blind_coordinate_fallback(self):
         """出门找不到时必须报错走恢复，不能按参考坐标盲点（真机连点 3 次的根因）。"""
         from src.locators import LOCATORS

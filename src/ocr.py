@@ -425,6 +425,9 @@ def parse_home_busy(
     """
     time_re = re.compile(r'(\d{1,2}):(\d{2}):(\d{2})')
     bottom = screen_height * 0.55 if screen_height else 0
+    # 标签与倒计时是上下两行（真机 1200x2670 实测 dy≈67px，1200 宽屏会更大），
+    # 容差按屏幕高度取 6%，最小 60px
+    tol_y = max(60, int(screen_height * 0.06)) if screen_height else 60
     rows = [(t.replace(' ', ''), x, y, s) for t, x, y, s in results if y >= bottom]
     for text, x, y, score in rows:
         kind = next((k for label, k in HOME_BUSY_LABELS.items() if label in text), None)
@@ -434,11 +437,11 @@ def parse_home_busy(
         if m:
             secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
             return kind, secs, x, y, score
-        # 时间在同行相邻块：取离标签最近的时间（进度条高度有限，纵坐标容差 60px）
+        # 时间在相邻块：取离标签最近的时间（标签在上、倒计时在下）
         best: tuple[int, int, int, int, float] | None = None
         for text2, x2, y2, score2 in rows:
             m2 = time_re.search(text2)
-            if not m2 or abs(y2 - y) > 60:
+            if not m2 or abs(y2 - y) > tol_y:
                 continue
             d = abs(x2 - x)
             if best is None or d < best[0]:

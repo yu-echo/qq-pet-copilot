@@ -432,6 +432,15 @@ class DeviceScenario:
             time.sleep(CLICK_INTERVAL)
             if not self._on_main_page(None, self.dev.hierarchy()):
                 return None
+            # 点了"出门"却还在主页面：先怀疑是忙碌主页（学习/打工/冒险进度条）。
+            # 真机遇到过忙碌主页仍能匹配到"出门"节点、点了没反应的情况，这里兜住，
+            # 否则会连点三次后告警退出（2026-10-22 报障）。
+            busy = self.detect_home_busy()
+            if busy:
+                left = self._handle_home_busy(busy, on_busy)
+                if left is not None:
+                    return left
+                continue  # 阻塞模式已等到活动结束：重新找"出门"（不计失败次数）
             log(f'点击出门后仍在主页面，重试点击出门（{attempts}/{LEAVE_HOME_ATTEMPTS}）')
         raise RuntimeError(
             f'{LEAVE_HOME_ATTEMPTS} 次尝试后仍未离开主页面（找不到"出门"按钮或点击无效）')
