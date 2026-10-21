@@ -1,21 +1,21 @@
 """统一执行器：按主页金币数量调度学习 / 打工。
 
 调度引擎（config.yaml 的 runner.engine）：
-- task_queue（默认）：任务队列调度（TaskQueueRunner），执行顺序由 tasks.order
-  配置（> 分隔，越靠前越优先，不在 order 里的任务不调度），每个任务有独立的
-  enabled / trigger（interval 间隔 / daily 每日时间点）/ enabled_time_range /
-  success_interval / failure_interval 调度设置（config.yaml 的 tasks 段）；
-  冒险/学习/打工/雇佣好友互斥，作为主任务组按 tasks.main_order（默认
-  学习>雇佣好友>冒险>打工）统一调度，且非阻塞等待：进行中 OCR 剩余时间后
-  先调度其他任务，到点再收尾计数
+- task_queue（默认）：任务队列调度（TaskQueueRunner）。主任务由计划表
+  （config.yaml 的 plan.items）第一条未完成条目驱动（按次数或时长判定完成），
+  计划间隙按 tasks.order 扫描踩踩/PK/好友护理/福袋等支线；每个任务有独立的
+  enabled / enabled_time_range / success_interval / failure_interval 调度设置
+  （config.yaml 的 tasks 段），已没有"每日时间点"到点开窗的机制；
+  冒险/学习/打工/雇佣好友互斥，作为主任务组统一调度，且非阻塞等待：
+  进行中 OCR 剩余时间后先调度其他任务，到点再收尾计数
 - legacy：老主循环调度（Runner.run），顺序写死：护理检查 -> 冒险 -> 踩踩 -> PK
   -> 好友雇佣 -> 好友护理 -> 学习/打工
 
 调度逻辑（两种引擎共通）：
 - 所有任务开始之前：检查一次体力/清洁（主页展开状态面板 OCR），
   低于 care 阈值则喂食/洗澡到达标
-- 冒险优先：当天到达 adventure.start_time 且冒险次数未满（adventure.times_per_day）
-  -> 优先处理冒险，每次冒险后回主页面重新判断；当天次数用完后等第二天该时间再冒险
+- 冒险优先：当天冒险次数未满就执行（adventure.times_per_day），每次冒险后
+  回主页面重新判断；当天次数用完后等跨天重置
 - 学习/打工按金币阈值切换（学习按学园 10/20/30/45 分钟、打工按所选时长结算）
 - 每轮先在主页面 OCR 金币数量（顶部状态栏最右侧数值）
 - 金币 >= schedule.coin_threshold -> 优先学习

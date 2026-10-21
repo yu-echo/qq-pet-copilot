@@ -13,7 +13,7 @@
   同时打"非会员"标记：之后每天复查一次，恢复会员自动重开；
 - "立即领取"按钮作为兜底分支保留（个别机型/版本可能走按钮确认）。
 
-调度走任务队列：tasks.svip.trigger=daily + daily_times 每天到点执行一次；
+调度走任务队列：每天执行一次（当天领完标记 dead，跨天自动重开，没有固定时间点）；
 "今天是否已领取"持久化在 runs/svip_progress.json（跨天自动失效）。
 """
 from __future__ import annotations

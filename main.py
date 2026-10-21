@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PyQt6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTime, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -68,12 +68,10 @@ from qfluentwidgets import (
     SwitchButton,
     TableWidget,
     Theme,
-    TimeEdit,
     isDarkTheme,
     setTheme,
 )
 
-from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 from qfluentwidgets.components.navigation.navigation_bar import NavigationBar
 from qfluentwidgets.components.navigation.navigation_widget import NavigationPushButton
 
@@ -308,13 +306,6 @@ class _NoWheelSpinBox(SpinBox):
     仅屏蔽滚轮事件，键盘上下键、直接输入等行为不受影响；
     保存由设置页的 valueChanged 触发（数值真的变化才保存，滚轮不再误触发）。
     """
-
-    def wheelEvent(self, event):
-        event.ignore()
-
-
-class _NoWheelTimeEdit(TimeEdit):
-    """时间编辑框：禁用鼠标滚轮改值（同 _NoWheelSpinBox，防手滑）。"""
 
     def wheelEvent(self, event):
         event.ignore()
@@ -1562,27 +1553,6 @@ class MainWindow(MSFluentWindow):
 
     # ---- 计划页面（重构：任务表格 -> 每日活动计划）----
 
-    @staticmethod
-    def _clock_to_time(value):
-        """把 HH:MM（或 HH:MM:SS / YAML 1.1 解析出的分钟数）转成 datetime.time；
-        解析失败返回 None。"""
-        if isinstance(value, int):
-            value = f'{value // 60:02d}:{value % 60:02d}'
-        for fmt in ('%H:%M', '%H:%M:%S'):
-            try:
-                return datetime.strptime(str(value), fmt).time()
-            except ValueError:
-                continue
-        return None
-
-    @staticmethod
-    def _qtime_from_value(value) -> 'QTime':
-        """把 HH:MM 字符串 / YAML 1.1 分钟数转成 QTime，非法回退 00:00。"""
-        if isinstance(value, int):
-            return QTime(value // 60, value % 60)
-        t = QTime.fromString(str(value), 'HH:mm')
-        return t if t.isValid() else QTime(0, 0)
-
     def _build_plan_page(self) -> QWidget:
         """自动控制页：概览 + 每日活动计划 + 间隔任务 + 今日统计。
 
@@ -2203,9 +2173,9 @@ class MainWindow(MSFluentWindow):
     def _build_visit_pk_card(self) -> 'CompactCardWidget':
         """自动踩一踩 + 自动 PK 合并卡。
 
-        开始时间只是下限：调度器判定「当前时间 >= 开始时间且当天次数未满」就执行
-        （scenarios/runner.py 的 visit_due/pk_due），所以打开开关当天立即跑，
-        不用等到明天的这个时间——与参考页 autoPokeStarted 的语义一致。
+        不再有"每日开始时间"：调度器只按「开着开关 + 当天次数未满」执行
+        （scenarios/runner.py 的 visit_due/pk_due），计划表主任务之间的间隙就跑，
+        当天次数用完等跨天自动重开。
         """
         card = CompactCardWidget()
         card.setTitle('踩一踩与 PK')
@@ -2215,16 +2185,16 @@ class MainWindow(MSFluentWindow):
         lay.setSpacing(12)
         lay.addWidget(self._build_poke_section(
             'visit', '自动踩一踩',
-            '到开始时间即执行，每位好友当天只踩一次；当天完成后等待次日自动执行'))
+            '计划间隙执行，每位好友当天只踩一次；当天完成后等次日自动重开'))
         lay.addWidget(self._h_line())
         lay.addWidget(self._build_poke_section(
             'pk', '自动 PK',
-            '到开始时间即执行，打完自动切换下一个好友；当天次数用完等待次日'))
+            '计划间隙执行，打完自动切换下一个好友；当天次数用完等次日重开'))
         card.viewLayout.addWidget(body)
         return card
 
     def _build_poke_section(self, key: str, title: str, subtitle: str) -> QWidget:
-        """踩踩/PK 单个区块：标题 + 开关一行，下面三格统计（时间/目标/已执行）。"""
+        """踩踩/PK 单个区块：标题 + 开关一行，下面两格统计（目标/已执行）。"""
         cfg = load_config()
         section = QWidget()
         lay = QVBoxLayout(section)
@@ -2251,21 +2221,13 @@ class MainWindow(MSFluentWindow):
         lay.addLayout(head)
 
         if key == 'visit':
-            tints = ('rgba(90, 140, 250, 0.10)',) * 3
+            tints = ('rgba(90, 140, 250, 0.10)',) * 2
         else:
-            # PK 三格照参考页用 蓝/绿/紫 三种淡色
-            tints = ('rgba(90, 140, 250, 0.10)', 'rgba(80, 200, 140, 0.10)',
-                     'rgba(150, 110, 240, 0.10)')
+            # PK 两格照参考页用 蓝/绿 两种淡色
+            tints = ('rgba(90, 140, 250, 0.10)', 'rgba(80, 200, 140, 0.10)')
 
         stats = QHBoxLayout()
         stats.setSpacing(10)
-
-        te = _NoWheelTimeEdit()
-        te.setDisplayFormat('HH:mm')
-        te.setTime(self._qtime_from_value(getattr(cfg, key).start_time))
-        te.timeChanged.connect(
-            lambda qt, k=key: self._save_schedule_time(k, qt))
-        stats.addWidget(self._stat_panel('每日开始时间', te, '每天北京时间', tints[0]), 1)
 
         spin = _NoWheelSpinBox()
         spin.setRange(0, 9999)
@@ -2273,12 +2235,12 @@ class MainWindow(MSFluentWindow):
         spin.valueChanged.connect(
             lambda v, k=key: self._save_schedule_values({f'{k}.times_per_day': int(v)}))
         stats.addWidget(self._stat_panel('每日目标', self._unit_spin(spin, '次/天'),
-                                         '0 = 不执行', tints[1]), 1)
+                                         '0 = 不执行', tints[0]), 1)
 
         done_label = StrongBodyLabel('-')
         self._poke_stats = getattr(self, '_poke_stats', {})
         self._poke_stats[key] = done_label
-        stats.addWidget(self._stat_panel('今日已执行', done_label, '成功开始数量', tints[2]), 1)
+        stats.addWidget(self._stat_panel('今日已执行', done_label, '成功开始数量', tints[1]), 1)
 
         lay.addLayout(stats)
         return section
@@ -2560,13 +2522,6 @@ class MainWindow(MSFluentWindow):
             mapping = {f'tasks.{key}.interval_seconds': seconds}
         self._save_schedule_values(mapping)
 
-    def _save_schedule_time(self, key: str, qtime: 'QTime') -> None:
-        """保存每日调度时间：场景 start_time + 队列 daily_times 一起改，保持一致。"""
-        value = qtime.toString('HH:mm')
-        quoted = DoubleQuotedScalarString(value)
-        self._save_schedule_values({f'{key}.start_time': quoted,
-                                    f'tasks.{key}.daily_times': [quoted]})
-
     # ---- 下次执行 ----
 
     @staticmethod
@@ -2595,23 +2550,18 @@ class MainWindow(MSFluentWindow):
         if key == 'care':
             return '启动后立即'
         if key in ('adventure', 'visit', 'pk'):
-            scene = getattr(cfg, key)
-            start_t = self._clock_to_time(getattr(scene, 'start_time', '00:00'))
-            if start_t is None:
-                return '—'
-            start_dt = datetime.combine(now.date(), start_t)
-            times = int(getattr(scene, 'times_per_day', 0) or 0)
+            # 已无每日时间点：当天次数没满时任何时刻都可执行，满了等跨天重置
+            times = int(getattr(getattr(cfg, key), 'times_per_day', 0) or 0)
             done = 0
             if times:
                 file = {'adventure': ADVENTURE_PROGRESS_FILE, 'visit': VISIT_PROGRESS_FILE,
                         'pk': PK_PROGRESS_FILE}[key]
                 _, done, _ = load_progress(file, quiet=True)
             if times and done >= times:
-                nxt = start_dt if start_dt > now else start_dt + timedelta(days=1)
+                nxt = datetime.combine(now.date() + timedelta(days=1),
+                                       datetime.min.time())
                 return self._fmt_next_dt(nxt, now)
-            if start_dt <= now:
-                return '现在可执行'
-            return self._fmt_next_dt(start_dt, now)
+            return '现在可执行'
         if key == 'hire_friend':
             if not cfg.hire_friend.enabled:
                 return '—'
