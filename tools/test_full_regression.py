@@ -873,6 +873,19 @@ class FullRegression(unittest.TestCase):
         self.assertTrue(logs)
         self.assertFalse(any(token in m for m in logs), logs)
 
+    def test_pushplus_business_code_failure_is_reported(self):
+        """PushPlus 失败也回 HTTP 200，必须按响应体 code 判定，不能报"成功"。"""
+        from src import notify
+        logs=[]
+        response=NS(status_code=200,json=lambda: {'code':903,'msg':'token无效'})
+        notifier=NS(notify=lambda **kwargs: response)
+        with patch('src.notify.log',side_effect=lambda msg: logs.append(str(msg))), \
+             patch('onepush.get_notifier',return_value=notifier):
+            self.assertFalse(notify._onepush_notify(
+                {'provider':'pushplus','token':'X'*32},'告警'))
+        self.assertTrue(any('code=903' in m for m in logs), logs)
+        self.assertFalse(any('推送成功' in m for m in logs), logs)
+
     def test_main_page_rejects_care_panel_overlay(self):
         """洗澡页误判回归：护理面板盖在主页上时不算可操作的主页。
 

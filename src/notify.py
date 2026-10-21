@@ -155,6 +155,20 @@ def _onepush_notify(cfg: dict, reason: str, image_path: str | None = None) -> bo
         if status_code != 200:
             log(f'告警通知: OnePush 推送失败，状态码={status_code}')
             return False
+        if provider == 'pushplus':
+            # PushPlus 失败也回 HTTP 200（例如 token 无效 code=903），必须看响应体的 code
+            try:
+                body = response.json()
+            except Exception:
+                body = None
+            if isinstance(body, dict):
+                code = int(body.get('code', 200) or 0)
+                if code != 200:
+                    msg = str(body.get('msg') or '')
+                    if secret:
+                        msg = msg.replace(secret, '***')
+                    log(f'告警通知: PushPlus 推送失败，code={code} msg={msg}')
+                    return False
         log(f'告警通知: OnePush 推送成功（{provider}）')
         return True
     except Exception as e:
