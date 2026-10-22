@@ -41,6 +41,32 @@ def work_rows(location='云朵梦舍'):
 
 
 class FullRegression(unittest.TestCase):
+    def test_adb_launch_failure_raises_readable_error(self):
+        """adb.exe 启动不了时不能把 WinError 2 直接抛给用户，且要自动找回可用 adb。"""
+        from src.adb.device import AdbError, Device
+        dev=Device(str(Path(tempfile.mkdtemp())/'missing-adb.exe'),'serial')
+        with patch('src.config.find_adb',return_value='C:/real/adb.exe'), \
+             patch('subprocess.run',side_effect=FileNotFoundError(2,'系统找不到指定的文件。')), \
+             patch('src.progress.log'):
+            with self.assertRaises(AdbError) as ctx:
+                dev._run('shell','echo','1')
+        message=str(ctx.exception)
+        self.assertIn('无法启动 adb',message)
+        self.assertIn('adb.path',message)
+        # 第一次失败后应已把路径换成重新找到的 adb
+        self.assertEqual(dev.adb,'C:/real/adb.exe')
+
+    def test_adb_retry_after_transient_launch_failure(self):
+        """杀软/临时目录清理导致的偶发启动失败，重试一次就该跑通。"""
+        from src.adb.device import Device
+        ok=NS(returncode=0,stdout=b'ok',stderr=b'')
+        dev=Device('C:/real/adb.exe','serial')
+        with patch('subprocess.run',side_effect=[FileNotFoundError(2,'gone'),ok]) as run, \
+             patch('time.sleep'):
+            proc=dev._run('shell','echo','1')
+        self.assertEqual(proc.stdout,b'ok')
+        self.assertEqual(run.call_count,2)
+
     def test_packaged_runtime_uses_shared_adb_and_limited_threads(self):
         import runpy
         from adbutils._utils import adb_path
@@ -904,9 +930,9 @@ class FullRegression(unittest.TestCase):
         token = 'T'*32
         calls=[]
         with patch('src.notify.load_config',return_value=NS(notify=NS(win_toast=False,onepush_config='',pushplus_token=token))), \
-             patch('src.notify._onepush_notify',side_effect=lambda cfg,reason,image_path=None: calls.append(cfg) or True):
+             patch('src.notify._pushplus_notify',side_effect=lambda tok,reason: calls.append(tok) or True):
             self.assertTrue(notify.send_alert('本地测试，不对外发送'))
-        self.assertEqual(calls,[{'provider':'pushplus','token':token}])
+        self.assertEqual(calls,[token])
 
     def test_pushplus_token_falls_back_to_env(self):
         """配置留空时读环境变量 PUSHPLUS_TOKEN。"""
@@ -915,16 +941,57 @@ class FullRegression(unittest.TestCase):
         calls=[]
         with patch.dict(os.environ,{'PUSHPLUS_TOKEN':token}), \
              patch('src.notify.load_config',return_value=NS(notify=NS(win_toast=False,onepush_config='',pushplus_token=''))), \
-             patch('src.notify._onepush_notify',side_effect=lambda cfg,reason,image_path=None: calls.append(cfg) or True):
+             patch('src.notify._pushplus_notify',side_effect=lambda tok,reason: calls.append(tok) or True):
             self.assertTrue(notify.send_alert('本地测试，不对外发送'))
-        self.assertEqual(calls,[{'provider':'pushplus','token':token}])
+        self.assertEqual(calls,[token])
+
+    def test_pushplus_sends_json_post_without_onepush(self):
+        """PushPlus 用标准库直发 JSON POST，不导入 onepush（打包后 onepush 可能整体不可用）。"""
+        import json
+        from src import notify
+        token='P'*32
+        seen={}
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self,*a): return False
+            def read(self): return json.dumps({'code':200,'msg':'ok'}).encode()
+        def fake_urlopen(request,timeout=None):
+            seen['url']=request.full_url
+            seen['headers']=dict(request.headers)
+            seen['body']=json.loads(request.data.decode('utf-8'))
+            seen['timeout']=timeout
+            return _Resp()
+        with patch('urllib.request.urlopen',side_effect=fake_urlopen), \
+             patch.dict('sys.modules',{'onepush':None}):
+            self.assertTrue(notify._pushplus_notify(token,'告警正文'))
+        self.assertEqual(seen['url'],'https://www.pushplus.plus/send')
+        self.assertEqual(seen['body']['token'],token)
+        self.assertEqual(seen['body']['title'],notify.TITLE)
+        self.assertEqual(seen['body']['content'],'告警正文')
+
+    def test_pushplus_direct_send_business_code_failure(self):
+        """直发通道同样按响应体 code 判定失败，且日志不出现 token。"""
+        import json
+        from src import notify
+        token='Q'*32
+        logs=[]
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self,*a): return False
+            def read(self): return json.dumps({'code':903,'msg':f'无效token {token}'}).encode()
+        with patch('urllib.request.urlopen',return_value=_Resp()), \
+             patch('src.notify.log',side_effect=lambda msg: logs.append(str(msg))):
+            self.assertFalse(notify._pushplus_notify(token,'告警'))
+        self.assertTrue(any('code=903' in m for m in logs), logs)
+        self.assertFalse(any(token in m for m in logs), logs)
 
     def test_pushplus_not_sent_twice_when_onepush_already_pushplus(self):
         """onepush_config 已经是 pushplus 时不再额外推一条，避免一次告警收两条。"""
         from src import notify
         calls=[]
         with patch('src.notify.load_config',return_value=NS(notify=NS(win_toast=False,onepush_config='{provider: pushplus, token: abc}',pushplus_token='T'*32))), \
-             patch('src.notify._onepush_notify',side_effect=lambda cfg,reason,image_path=None: calls.append(cfg) or True):
+             patch('src.notify._onepush_notify',side_effect=lambda cfg,reason,image_path=None: calls.append(cfg) or True), \
+             patch('src.notify._pushplus_notify',side_effect=lambda tok,reason: calls.append({'provider':'pushplus','token':tok}) or True):
             self.assertTrue(notify.send_alert('本地测试，不对外发送'))
         self.assertEqual(calls,[{'provider':'pushplus','token':'abc'}])
 

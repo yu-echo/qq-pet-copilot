@@ -1,9 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
+import importlib.util
 import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_submodules
 
 EXE_NAME = 'QQPetCopilot'
 
@@ -53,6 +55,12 @@ for _dll in ('ffi.dll', 'libcrypto-3-x64.dll', 'libssl-3-x64.dll'):
     if _p.is_file():
         binaries.append((str(_p), '.'))
 datas += collect_data_files('uiautomator2')
+# pycryptodome 的 Crypto.Util._cpuid_c 是 .pyd 扩展模块，PyInstaller 默认漏收，
+# 冻结后 import Crypto 报 "Cannot load native module 'Crypto.Util._cpuid_c'"，连带
+# onepush 整个导入失败、告警发不出去（2026-10-22 00:43 实际事故）。装了才收，避免
+# 没装 pycryptodome 的开发机打包直接报错。
+if importlib.util.find_spec('Crypto'):
+    hiddenimports += collect_submodules('Crypto')
 tmp_ret = collect_all('rapidocr')
 # rapidocr 包自带的 v4/v5 onnx 模型不打包（本项目只用 PP-OCRv6 tiny，见 runs/models/rapidocr）
 datas += [d for d in tmp_ret[0] if not str(d[0]).lower().endswith('.onnx')]

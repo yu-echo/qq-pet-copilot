@@ -3,7 +3,9 @@
 渠道（config.yaml 的 notify 段配置，可叠加，任一成功即算送达）：
 - Windows Toast 桌面通知：notify.win_toast: true（需 winotify）
 - PushPlus 推送：notify.pushplus_token 填 token（留空则读环境变量
-  PUSHPLUS_TOKEN）；token 属敏感信息，日志只记「已配置/未配置」，绝不打印
+  PUSHPLUS_TOKEN）；token 属敏感信息，日志只记「已配置/未配置」，绝不打印。
+  直接走标准库 HTTP 调官方接口，不经 onepush——onepush 会连带导入
+  pycryptodome 等原生模块，打包成 exe 后常因缺 .pyd 整体导入失败
 - OnePush 推送：notify.onepush_config 填 YAML（设置页是多行输入框），
   支持 Bark / PushPlus / Server酱 / Telegram / SMTP / 自定义 webhook 等
   onepush 提供方，例如：
@@ -43,8 +45,7 @@ def send_alert(reason: str, image_path: str | None = None) -> bool:
         token = _pushplus_token(cfg)
         # onepush_config 里已经写了 pushplus 时不重复推（否则一次告警收两条）
         if token and _onepush_provider(str(cfg.onepush_config)) != 'pushplus':
-            sent = _onepush_notify(
-                {'provider': 'pushplus', 'token': token}, reason, image_path) or sent
+            sent = _pushplus_notify(token, reason) or sent
         if not sent:
             log('告警通知: 未发送成功（未配置渠道或发送失败，详见上方日志）')
         return sent
@@ -86,6 +87,45 @@ def _send_windows_toast(reason: str, image_path: str | None = None) -> bool:
 def _pushplus_token(cfg: NotifyConfig) -> str:
     """取 PushPlus token：配置优先，其次环境变量 PUSHPLUS_TOKEN；都不打印。"""
     return str(cfg.pushplus_token or '').strip() or os.environ.get('PUSHPLUS_TOKEN', '').strip()
+
+
+def _pushplus_notify(token: str, reason: str) -> bool:
+    """直接调 PushPlus 官方接口发送（标准库 urllib，不依赖 onepush）。
+
+    onepush 顶层会连带导入 pycryptodome；打包成 exe 后缺 Crypto 原生 .pyd 时
+    整个 onepush 都导入失败，PushPlus 这条最常用的告警渠道也跟着失效。
+    这里自己发一个 JSON POST，失败只记日志（token 抹掉），返回是否送达。
+    """
+    import json
+    import urllib.request
+
+    payload = {'token': token, 'title': TITLE, 'content': str(reason), 'template': 'txt'}
+    request = urllib.request.Request(
+        'https://www.pushplus.plus/send',
+        data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            raw = response.read().decode('utf-8', 'replace')
+    except Exception as e:
+        detail = (str(e).strip() or repr(e)).replace(token, '***')
+        log(f'告警通知: PushPlus 推送失败: {type(e).__name__}: {detail}')
+        return False
+    try:
+        body = json.loads(raw)
+    except Exception:
+        log(f'告警通知: PushPlus 返回无法解析: {raw[:120].replace(token, "***")}')
+        return False
+    # PushPlus 失败也回 HTTP 200（token 无效是 code=903），必须看响应体 code
+    code = int(body.get('code', 200) or 0) if isinstance(body, dict) else 0
+    if code != 200:
+        msg = str(body.get('msg') or '').replace(token, '***')
+        log(f'告警通知: PushPlus 推送失败，code={code} msg={msg}')
+        return False
+    log('告警通知: PushPlus 推送成功')
+    return True
 
 
 def _onepush_provider(config_text: str) -> str:

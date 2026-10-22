@@ -48,8 +48,13 @@ def resource_path(rel: str | Path) -> Path:
     if rel.is_absolute():
         return rel
     if getattr(sys, "frozen", False):
-        local = APP_ROOT / "runs" / rel
-        return local if local.exists() else RESOURCE_ROOT / rel
+        # runs/ 下的同名资源优先（可写数据目录，用户替换不重新打包），
+        # 其次 exe 同级（config.yaml 里 adb.path 填的相对路径就落在这里），
+        # 最后才用 PyInstaller 解压目录里的随包资源
+        for local in (APP_ROOT / "runs" / rel, APP_ROOT / rel):
+            if local.exists():
+                return local
+        return RESOURCE_ROOT / rel
     local = APP_ROOT / rel
     return local if local.exists() else RESOURCE_ROOT / rel
 
@@ -455,10 +460,26 @@ def find_adb(configured_path: str = "") -> str:
 
     for path in candidates:
         if path and Path(path).is_file():
+            if configured_path and path != candidates[0]:
+                _log_adb_fallback(candidates[0], path)
             return str(Path(path))
     raise FileNotFoundError(
         "找不到 adb。请安装 platform-tools，并在 config.yaml 的 adb.path 中填写 adb.exe 完整路径。"
     )
+
+
+_adb_fallback_warned: set[str] = set()
+
+
+def _log_adb_fallback(missing: str, used: str) -> None:
+    """配置的 adb 路径不存在时提示一次（同一路径只提示一次，避免轮询刷屏）。"""
+    if missing in _adb_fallback_warned:
+        return
+    _adb_fallback_warned.add(missing)
+    from .progress import log
+
+    log(f'配置的 adb 路径不存在：{missing}，已改用 {used}')
+
 
 
 @lru_cache(maxsize=4)
