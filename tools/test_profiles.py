@@ -145,6 +145,9 @@ assert config.APP_ROOT != config.DATA_ROOT or config.PROFILE_ID == 'default'
             self.assertEqual(self.store.read()['active'], key)
             w.close()
 
+    @unittest.skipIf(os.environ.get('GITHUB_ACTIONS') == 'true',
+                     'GitHub Windows runner 无桌面会话，Qt 模拟最大化/还原会直接崩进程；'
+                     '该用例验证真实窗口管理器行为，仅本地执行')
     def test_eight_resize_edges_cursor_and_left_drag_dispatch(self):
         import main
         from PyQt6.QtCore import QPoint, Qt
