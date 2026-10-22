@@ -202,6 +202,9 @@ assert config.APP_ROOT != config.DATA_ROOT or config.PROFILE_ID == 'default'
             finally:
                 w.close()
 
+    @unittest.skipIf(os.environ.get('GITHUB_ACTIONS') == 'true',
+                     'GitHub Windows runner 无桌面会话，逐页 resize 会直接崩进程；'
+                     '该用例验证真实窗口布局，仅本地执行')
     def test_window_resizes_all_pages_and_keeps_small_controls_accessible(self):
         import main
         from PyQt6.QtCore import QPoint
