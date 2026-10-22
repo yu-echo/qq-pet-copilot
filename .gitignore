@@ -23,3 +23,6 @@ profiles.json
 _release_stage/
 release_notes.md
 *.zip
+
+# 本地打包日志
+build-run.log
