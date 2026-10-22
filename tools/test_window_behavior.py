@@ -37,6 +37,9 @@ class WindowBehaviorRegression(unittest.TestCase):
         self.w.show()
         QTest.qWait(60)
 
+    @unittest.skipIf(os.environ.get('GITHUB_ACTIONS') == 'true',
+                     'GitHub Windows runner 无桌面会话，点关闭按钮后 isMinimized() '
+                     '会直接把进程跑崩；该用例验证真实窗口状态，仅本地执行')
     def test_title_close_minimizes_without_stopping_runner(self):
         runner = NS(poll=lambda: None)
         self.w._runner_proc = runner
