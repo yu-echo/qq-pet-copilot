@@ -2,3 +2,6 @@
 # pip install -r requirements.txt -c build-constraints.txt
 PyQt6==6.7.1
 PyQt6-Qt6==6.7.3
+# 必须锁 1.20.0：1.31.x 在「PyQt6 先加载、onnxruntime 后加载」时进程直接
+# 0xC0000005 崩掉，PyInstaller 打包期探测依赖（import_library）会因此失败。
+onnxruntime==1.20.0
