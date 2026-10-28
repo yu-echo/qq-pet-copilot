@@ -4,5 +4,6 @@
 """
 
 APP_VERSION = '1.5'
-APP_GITHUB_REPO = 'hu181b/qq-pet-copilot'
+# 指向本仓库：更新检查只看这里发的 Release；上游仍是 hu181b（原项目）
+APP_GITHUB_REPO = 'yu-echo/qq-pet-copilot'
 APP_RELEASES_URL = f'https://github.com/{APP_GITHUB_REPO}/releases/latest'
