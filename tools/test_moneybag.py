@@ -149,6 +149,8 @@ class MoneyBagTests(unittest.TestCase):
         runner = Runner.__new__(Runner)
         runner._moneybag_next = 0
         runner.school = NS(dev=self.dev)
+        # _try_moneybags 要读福袋开关与巡检间隔，跳过 __init__ 时得自己补齐
+        runner._last_cfg = NS(runner=NS(moneybag_enabled=True, moneybag_interval_seconds=300))
         with patch('src.moneybag.MoneyBagCollector.run',side_effect=RuntimeError('offline')) as run:
             self.assertFalse(runner._try_moneybags())
             self.assertFalse(runner._try_moneybags())

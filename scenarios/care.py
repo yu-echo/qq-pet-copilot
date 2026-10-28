@@ -26,7 +26,7 @@ import numpy as np
 
 from src.locators import see_bounds
 from src.ocr import ocr_texts
-from src.progress import log
+from src.progress import log, reset_daily_progress_for_pet
 from src.scenario import CLICK_INTERVAL, DeviceScenario
 from src.status_cache import clear_status_fields, update_status
 from src.u2dev import REF_SIZE
@@ -40,6 +40,7 @@ STATUS_ROW_TOL = 40  # 名字右侧同行数字的纵向容差
 STATUS_COL_TOL = 80  # 名字下方同列数字的横向容差
 FEED_RESULT_WAIT = 1.5  # 喂食后等数值刷新的时间（秒）
 FEED_PANEL_RETRIES = 4  # 点 feed 后等喂食面板加载（feed_10 或"兑换食物"出现）的重试次数
+SHOWER_PANEL_RETRIES = 4  # 点 shower 后等洗澡面板加载的重试次数（别把"还没加载完"当"香皂不足"）
 MAX_FEED_ATTEMPTS = 10    # 喂食最多次数，超过认为异常
 EXCHANGE_FOOD_COUNT = 99  # 饼干不足时金币兑换食物的数量（弹窗输入框默认 5）
 EXCHANGE_POPUP_RETRIES = 3  # 等兑换食物弹窗（数量输入框）出现的重试次数
@@ -144,7 +145,12 @@ def nearest_item_count(results: list[tuple[str, int, int, float]],
     """
     best: tuple[float, int] | None = None
     for text, x, y, _ in results:
-        m = re.fullmatch(r'[xX×]?(\d{1,4})', text.replace(' ', ''))
+        normalized = text.replace(' ', '')
+        m = re.fullmatch(r'[xX×]?(\d{1,4})', normalized)
+        if not m and len(normalized) <= 3:
+            # OCR 偶尔把数字认成 'L8' 这类短噪声：只要里面有数字就取出来，
+            # 避免把"认错了"当成"库存为 0"去触发购买（真机误买过 99 个）
+            m = re.search(r'(\d{1,4})', normalized)
         if not m:
             continue
         dist = (x - px) ** 2 + (y - py) ** 2
@@ -159,13 +165,17 @@ class CareScenario(DeviceScenario):
         self.last_care_at: datetime | None = None  # 上次护理检查时间（护理间隔用）
         self.energy_threshold = self.cfg.care.energy_threshold
         self.clean_threshold = self.cfg.care.clean_threshold
+        self.auto_feed = bool(getattr(self.cfg.care, 'auto_feed', True))
+        self.auto_bathe = bool(getattr(self.cfg.care, 'auto_bathe', True))
         self.method = self.cfg.care.method
         if self.method not in CARE_METHODS:
             raise ValueError(
                 f'config.yaml 中 care.method 配置无效: {self.method!r}，'
                 f'可选: {"/".join(CARE_METHODS)}')
-        log(f'护理方式: {self.method}，体力阈值: {self.energy_threshold}，'
-            f'清洁阈值: {self.clean_threshold}')
+        log(f'护理方式: {self.method}，体力阈值: {self.energy_threshold}'
+            f'（自动喂食{"开" if self.auto_feed else "关"}），'
+            f'清洁阈值: {self.clean_threshold}'
+            f'（自动洗护{"开" if self.auto_bathe else "关"}）')
 
     # ---- 状态识别 ----
 
@@ -380,8 +390,18 @@ class CareScenario(DeviceScenario):
             raise RuntimeError('未找到 shower 洗澡按钮')
         self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
-        source = self.dev.hierarchy()
-        soap = self.see('shower_10', source=source)
+        # 洗澡面板加载有几秒延迟：先等 shower_10 / "购买洗澡道具"出现，
+        # 别把"面板还没加载完"误判成"香皂不足"而直接买 99 个（真机已踩过）
+        soap = None
+        source = None
+        for attempt in range(1, SHOWER_PANEL_RETRIES + 1):
+            self.ensure_game_foreground()
+            source = self.dev.hierarchy()
+            soap = self.see('shower_10', source=source)
+            if soap or self.see('buy_soap', source=source):
+                break
+            log(f'等待洗澡面板加载 ({attempt}/{SHOWER_PANEL_RETRIES})')
+            time.sleep(CLICK_INTERVAL)
         if not soap:
             # 香皂不足：金币购买一次（99 个足够，只买一次防死循环）后重新找
             self._buy_soap(source)
@@ -410,6 +430,9 @@ class CareScenario(DeviceScenario):
             last_clean: int | None = None
             stall = 0  # 清洁连续不提升的回合数
             for attempt in range(1, MAX_SHOWER_ATTEMPTS + 1):
+                # 用户在搓洗期间切到别的 App 时立即停手（finally 会抬手），
+                # 绝不能继续在别的应用上拖拽
+                self.ensure_game_foreground()
                 # 在 (50%, 67%) 和 (50%, 40%) 之间来回拖（截图复测不影响按压）
                 self.scrub_path(*bottom, *top)
                 self.scrub_path(*top, *bottom)
@@ -526,21 +549,31 @@ class CareScenario(DeviceScenario):
         log(f'宠物状态: 体力={status.get("体力")} '
             f'清洁={status.get("清洁")} 心情={status.get("心情")} '
             f'账号名称={status.get("账号名称")} 宠物名称={status.get("宠物名称")}')
-        # 写状态缓存（GUI 日志页顶部状态条显示；已取消多账号区分，固定 default 条目）
+        # 写状态缓存（GUI 日志页顶部状态条显示；已取消多账号区分，固定 default 条目）；
+        # 写之前检测宠物名变化：换了宠物/账号就把每日任务进度清零重计
+        try:
+            from src.status_cache import load_accounts
+            old_name = str((load_accounts().get('default') or {}).get('pet_name') or '').strip()
+        except Exception:
+            old_name = ''
+        new_name = str(status.get('宠物名称') or '').strip()
+        if new_name and old_name and new_name != old_name:
+            reset_daily_progress_for_pet(new_name)
         update_status(None,
+                      account_name=status.get('账号名称'),
                       pet_name=status.get('宠物名称'),
                       energy=status.get('体力'),
                       clean=status.get('清洁'),
                       mood=status.get('心情'))
         cared = False
         energy = status.get('体力')
-        if energy is not None and energy < self.energy_threshold:
+        if self.auto_feed and energy is not None and energy < self.energy_threshold:
             log(f'体力 {energy} < 阈值 {self.energy_threshold}，需要喂食')
             self.feed(source)
             cared = True
             source = self.dev.hierarchy()
         clean = status.get('清洁')
-        if clean is not None and clean < self.clean_threshold:
+        if self.auto_bathe and clean is not None and clean < self.clean_threshold:
             log(f'清洁 {clean} < 阈值 {self.clean_threshold}，需要洗澡')
             self.shower(source)
             cared = True

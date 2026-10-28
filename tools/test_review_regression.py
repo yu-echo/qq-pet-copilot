@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src import atomic_file, progress_store, settings, status_cache
-from src.config import Config
+from src.config import Config, PlanConfig, PlanItemConfig
 from src.profiles import ProfileStore
 from scenarios.runner import TaskQueueRunner, _QueueTask, QUEUE_POLL_INTERVAL
 
@@ -107,6 +107,9 @@ class ReviewRegression(unittest.TestCase):
     def test_removed_main_task_cannot_block_remaining_task(self):
         runner = TaskQueueRunner.__new__(TaskQueueRunner)
         runner._last_cfg = Config()
+        # 计划表当前条目是打工：学习不在计划里，也不该影响打工条目
+        runner._last_cfg.plan = PlanConfig(enabled=True, items=[
+            PlanItemConfig(activity='work', mode='count', count=1)])
         runner._last_cfg.tasks.order = 'school>work'
         tasks, order = {}, []
         runner._apply_tasks_config(tasks, order)
@@ -117,11 +120,9 @@ class ReviewRegression(unittest.TestCase):
         self.assertEqual(set(tasks), {'work'})
         self.assertIs(tasks['work'], work)
         runner._main_pending_scen = Mock(return_value=None)
-        runner.employed_window_active = Mock(return_value=False)
-        runner._eligible = Mock(return_value=True)
-        runner._school_due = Mock(return_value=True)
+        runner._plan_progress = Mock(return_value=({}, {}))
+        # 雇佣好友不在 order 里（tasks 只有 work）：普通打工兜底
         self.assertEqual(runner._main_choice(tasks, {}), 'work')
-        runner._school_due.assert_not_called()
 
     def test_removing_task_keeps_pending_activity_for_settlement(self):
         runner = TaskQueueRunner.__new__(TaskQueueRunner)
@@ -155,7 +156,8 @@ class ReviewRegression(unittest.TestCase):
                    'in_name': 'school_in', 'on_finish': finish}
         scenario.pending = pending
         scenario.ensure_main_page = Mock()
-        scenario.leave_home = Mock()
+        scenario.leave_home = Mock(return_value=None)
+        scenario.detect_home_busy = Mock(return_value=None)
         scenario.snapshot = Mock(return_value=(None, None))
         scenario.see = Mock(side_effect=lambda name, *args: (1, 2) if name == 'school_end' else None)
         self.assertFalse(scenario.finish_pending())

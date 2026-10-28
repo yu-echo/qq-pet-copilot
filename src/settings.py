@@ -38,7 +38,8 @@ DEFAULTS = {
     'schedule.encourage_times': 10,
     'adventure.times_per_day': 1,
     'adventure.start_time': '08:00',
-    'adventure.skip_bad_weather': False,
+    'adventure.duration': '45秒',
+    'adventure.skip_bad_weather': True,
     'adventure.batch': 12,
     'visit.times_per_day': 10,
     'visit.start_time': '00:01',
@@ -55,20 +56,23 @@ DEFAULTS = {
     'hire_friend.friend_name': '',
     'hire_friend.times_per_day': 8,
     'runner.engine': 'task_queue',
-    'tasks.order': 'care>school>friend_care>hire_friend>adventure>visit>pk>work',
+    'runner.moneybag_enabled': True,
+    'runner.moneybag_interval_seconds': 300,
+    'tasks.order': 'svip>care>school>friend_care>hire_friend>adventure>visit>pk>work',
     'tasks.main_order': 'school>hire_friend>adventure>work',
     'tasks.failure_interval': 1800,
     'care.energy_threshold': 60,
     'care.clean_threshold': 60,
-    'care.method': '一键护理',
+    'care.method': 'ocr检测',
     'care.interval_seconds': 60,
-    'work.duration': '45分钟',
+    'work.duration': '10分钟',
     'employed.enabled': False,
     'employed.time_range': '19:31-23:59',
     'employed.interval_seconds': 60,
     'employed.action': '等到25/75（小于45min）',
     'notify.win_toast': True,
     'notify.onepush_config': '',
+    'notify.pushplus_token': '',
 }
 
 
@@ -101,12 +105,15 @@ def validate_field(key: str, value):
             return False, DoubleQuotedScalarString(str(default))
     if key == 'friend_care.friend_name' or key == 'hire_friend.friend_name':
         return True, str(value).strip()
-    if key in ('friend_care.enabled', 'hire_friend.enabled', 'employed.enabled'):
+    if key in ('friend_care.enabled', 'hire_friend.enabled', 'employed.enabled',
+               'runner.moneybag_enabled'):
         return (True, value) if isinstance(value, bool) else (False, default)
     if key == 'runner.engine':
         return (True, value) if value in ('task_queue', 'legacy') else (False, default)
     if key == 'control.method':
         return (True, value) if value in ('injectInputEvent', 'minitouch') else (False, default)
+    if key == 'adventure.duration':
+        return (True, value) if value in ('45秒', '2小时') else (False, default)
     if key == 'gui.theme':
         return (True, value) if value in ('跟随系统', '深色', '浅色') else (False, default)
     if key == 'gui.close_action':
@@ -172,6 +179,9 @@ def validate_field(key: str, value):
             return (True, value) if int(value) >= 0 else (False, default)
         except (TypeError, ValueError):
             return False, default
+    if key == 'notify.pushplus_token':
+        # PushPlus token：留空或去空格原值（服务端格式可能调整，不校验长度）
+        return True, str(value or '').strip()
     return True, value
 
 
@@ -186,6 +196,27 @@ def save_raw(data) -> None:
     stream = StringIO()
     _yaml.dump(data, stream)
     atomic_write_text(CONFIG_FILE, stream.getvalue())
+
+
+def plan_to_raw(items) -> list:
+    """把每日活动计划的 PlanItemConfig 列表转成可写回 YAML 的普通字典列表。"""
+    return [{
+        'activity': str(item.activity),
+        'mode': str(item.mode),
+        'count': int(item.count),
+        'hours': float(item.hours),
+        'attribute': str(item.attribute),
+        'work_location': str(item.work_location),
+        'work_duration': str(item.work_duration),
+        'adventure_duration': str(item.adventure_duration),
+    } for item in items]
+
+
+def save_plan(items) -> None:
+    """只更新 config.yaml 的 plan 段，其余段落与注释原样保留。"""
+    data = load_raw()
+    data['plan'] = plan_to_raw(items)
+    save_raw(data)
 
 
 def get_value(data, dotted_key: str, default=None):
@@ -207,3 +238,38 @@ def set_value(data, dotted_key: str, value) -> None:
             cur[part] = {}
         cur = cur[part]
     cur[parts[-1]] = value
+
+
+# 版本升级时新增的任务键：老配置的 tasks.order 里没有，启动时自动追加到队尾。
+# 只在进程启动时迁移一次（GUI 主进程 + 调度器子进程各一次）；
+# 用户此后手动从 order 删掉的键不会再被加回来。以后新增任务时扩充这个元组。
+NEW_TASK_KEYS = ('svip',)
+
+
+def migrate_tasks_order() -> None:
+    """老配置的 tasks.order 缺少新任务键时，插入到队首并写回（保留注释）。
+
+    新任务（如 svip）是每天只跑一次的轻量任务，放最前=最高优先：
+    到点后调度器下一轮就先执行它，不用等前面长任务排队。
+    """
+    from src.progress import log
+
+    try:
+        if not CONFIG_FILE.exists():
+            # 首次启动还没有 config.yaml：默认配置本身就包含 NEW_TASK_KEYS，
+            # 不需要迁移，更不能因为文件不存在就报"迁移失败"吓用户
+            return
+        data = load_raw()
+        order = str(get_value(data, 'tasks.order') or '').strip()
+        if not order:
+            return  # 空 order 由调度器按全部任务键兜底，不需要迁移
+        keys = [k.strip() for k in order.split('>') if k.strip()]
+        missing = [k for k in NEW_TASK_KEYS if k not in keys]
+        if not missing:
+            return
+        set_value(data, 'tasks.order', '>'.join(missing + keys))
+        save_raw(data)
+        log(f'tasks.order 缺少新任务 {"/".join(missing)}，已插入到队首'
+            f'（重排顺序请到任务选项卡修改）')
+    except Exception as e:  # noqa: BLE001 - 迁移失败不阻断启动
+        log(f'tasks.order 迁移失败（{e}），请手动在任务选项卡把新任务加进执行顺序')

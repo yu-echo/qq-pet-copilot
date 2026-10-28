@@ -1,24 +1,22 @@
 """统一执行器：按主页金币数量调度学习 / 打工。
 
 调度引擎（config.yaml 的 runner.engine）：
-- task_queue（默认）：任务队列调度（TaskQueueRunner），执行顺序由 tasks.order
-  配置（> 分隔，越靠前越优先，不在 order 里的任务不调度），每个任务有独立的
-  enabled / trigger（interval 间隔 / daily 每日时间点）/ enabled_time_range /
-  success_interval / failure_interval 调度设置（config.yaml 的 tasks 段）；
-  冒险/学习/打工/雇佣好友互斥，作为主任务组按 tasks.main_order（默认
-  学习>雇佣好友>冒险>打工）统一调度，且非阻塞等待：进行中 OCR 剩余时间后
-  先调度其他任务，到点再收尾计数
+- task_queue（默认）：任务队列调度（TaskQueueRunner）。主任务由计划表
+  （config.yaml 的 plan.items）第一条未完成条目驱动（按次数或时长判定完成），
+  计划间隙按 tasks.order 扫描踩踩/PK/好友护理/福袋等支线；每个任务有独立的
+  enabled / enabled_time_range / success_interval / failure_interval 调度设置
+  （config.yaml 的 tasks 段），已没有"每日时间点"到点开窗的机制；
+  冒险/学习/打工/雇佣好友互斥，作为主任务组统一调度，且非阻塞等待：
+  进行中 OCR 剩余时间后先调度其他任务，到点再收尾计数
 - legacy：老主循环调度（Runner.run），顺序写死：护理检查 -> 冒险 -> 踩踩 -> PK
   -> 好友雇佣 -> 好友护理 -> 学习/打工
 
 调度逻辑（两种引擎共通）：
 - 所有任务开始之前：检查一次体力/清洁（主页展开状态面板 OCR），
   低于 care 阈值则喂食/洗澡到达标
-- 冒险优先：当天到达 adventure.start_time 且冒险次数未满（adventure.times_per_day）
-  -> 优先处理冒险，每次冒险后回主页面重新判断；当天次数用完后等第二天该时间再冒险
-- 学习工作时长规则：学习按学园（初级10/中级20/高级30/进修45 分钟）、
-  打工按所选时长（10分钟/45分钟/2小时）结算累计，累计 >= daily_hour_limit（小时）
-  后今天不再学习只打工，第二天自动清零
+- 冒险优先：当天冒险次数未满就执行（adventure.times_per_day），每次冒险后
+  回主页面重新判断；当天次数用完后等跨天重置
+- 学习/打工按金币阈值切换（学习按学园 10/20/30/45 分钟、打工按所选时长结算）
 - 每轮先在主页面 OCR 金币数量（顶部状态栏最右侧数值）
 - 金币 >= schedule.coin_threshold -> 优先学习
 - 金币 < 阈值 -> 先打工（每次打工一轮后重新判断），赚够了自然切换去学习
@@ -27,18 +25,15 @@
 - 踩踩/PK：到达各自 start_time 且当天次数未满时，在主页面处理；
   PK 每轮最多 16 局（超出下一轮接着跑），开始前检查体力/清洁
   （每局各耗 5，不足则喂食/洗澡到 90）
-- 好友护理：friend_care.enabled 开启且配置了好友名称时，在 friend_care.time_range
-  时间段内按 friend_care.interval_seconds 间隔调度：每次访问该好友家按
-  friend_care.method 护理一次（单次巡检，不再场景内切换好友刷新状态）后回主页面
-  （scenarios/friend_care.py）
-- 好友雇佣：hire_friend.enabled 开启且配置了好友名称时，在 hire_friend.time_range
-  时间段内按 hire_friend.interval_seconds 间隔调度且当天次数未满
-  （hire_friend.times_per_day）时访问该好友家，OCR hire 按钮上的
-  雇佣剩余 CD，有 CD 抛 TaskDeferred 延后 60 秒复测（不原地等待），
-  没有 CD 点 hire 进打工面板（固定等 3 秒加载，重试点击），
-  按打工流程 select_place 确认/重选打工地点后按 work.duration 选工作选择框
-  （10分钟/45分钟/2小时 -> select_box_1/2/3）点 work_start
-  打工一轮；打工结束后计数（雇佣好友 + 打工各一次）（scenarios/hire_friend.py）
+- 好友护理（与经验日常合并）：friend_care.enabled 开启时，全天按
+  friend_care.interval_seconds 间隔调度：访问第一个好友家，检测到照顾区域
+  有 exp/经验就点一键护理加经验，没有则视为当日经验日常完成（scenarios/friend_care.py）
+- 好友雇佣：hire_friend.enabled 开启时，打工时每次都雇佣（不限次数/间隔/
+  好友名称，自动选择第一个好友），OCR hire 按钮上的雇佣剩余 CD，有 CD 抛
+  TaskDeferred 延后 60 秒复测（不原地等待），没有 CD 点 hire 进打工面板
+  （固定等 3 秒加载，重试点击），按打工流程 select_place 确认/重选打工地点后按
+  work.duration 选工作选择框（10分钟/45分钟/2小时 -> select_box_1/2/3）点
+  work_start 打工一轮；打工结束后计数（雇佣好友 + 打工各一次）（scenarios/hire_friend.py）
 - 异常分级重试：场景执行抛异常 -> 先回主页面重进场景重试一次（页面状态
   错乱多半能自愈，不必重启）-> 仍失败才 adb reboot 重启设备 -> 启动 QQ ->
   点 Q宠-* 入口回宠物页面（src/recover.py）-> 最后再试一次；
@@ -73,6 +68,7 @@ from src.config import (
     PROJECT_ROOT,
     TASK_KEYS,
     TaskItemConfig,
+    duration_seconds,
     find_adb,
     load_config,
 )
@@ -80,15 +76,17 @@ from src.notify import send_alert
 from src.ocr import get_engine
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
-    HIRE_FRIEND_PROGRESS_FILE,
     PK_PROGRESS_FILE,
     SCHOOL_PROGRESS_FILE,
     VISIT_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
     exp_daily_done,
+    add_moneybag_coins,
     load_durations,
     load_progress,
     log,
+    svip_claimed_today,
+    svip_nonmember_flag,
 )
 from src.queue_status import save_queue_status
 from src.recover import reenter_pet
@@ -97,12 +95,14 @@ from src.status_cache import update_status
 from src.u2dev import U2Device
 from PIL import Image
 from scenarios.adventure import AdventureScenario
+from scenarios.adventure import DURATION_OPTIONS as ADVENTURE_DURATION_OPTIONS
 from scenarios.care import CareScenario
 from scenarios.employed import EmployedScenario
-from scenarios.friend_care import FriendCareScenario, in_time_range, parse_time_range
+from scenarios.friend_care import FriendCareScenario
 from scenarios.hire_friend import FriendHireScenario
 from scenarios.pk import PKDeferred, PKScenario
 from scenarios.school import ATTRIBUTE_COURSES, SchoolScenario
+from scenarios.svip import SvipScenario
 from scenarios.visit import VisitScenario
 from scenarios.work import DURATION_BOXES, WorkScenario
 
@@ -119,16 +119,6 @@ SIDE_TASK_RETRY_DELAY = 1800
 
 class ScenarioFailed(Exception):
     """支线任务多次重试仍失败（内部信号：调用方捕获后重新排期，不退出调度器）。"""
-
-
-def parse_hhmm(value, field: str):
-    """解析 HH:MM 时间配置（YAML 1.1 会把不带引号的 9:00 解析成分钟数 540）。"""
-    if isinstance(value, int):
-        value = f'{value // 60:02d}:{value % 60:02d}'
-    try:
-        return datetime.strptime(value, '%H:%M').time()
-    except ValueError:
-        raise ValueError(f'config.yaml 中 {field} 格式无效: {value!r}，应为 HH:MM') from None
 
 
 class Runner:
@@ -151,6 +141,7 @@ class Runner:
         self.friend_care = FriendCareScenario(dev)
         self.hire_friend = FriendHireScenario(dev)
         self.employed = EmployedScenario(dev)
+        self.svip = SvipScenario(dev)
         self.recoveries = 0  # 连续异常恢复次数（成功跑完一轮清零；距上次超过 RECOVERY_RESET_AFTER 也清零）
         self.last_recovery_at = 0.0  # 上次发起恢复的 monotonic 时间
         self.retry_after: dict[str, datetime] = {}  # 支线任务名 -> 失败后的下次可执行时间
@@ -158,71 +149,46 @@ class Runner:
         self.pk_dead = False     # PK 今天不再可用（执行失败）
         self.friend_care_dead = False  # 好友护理今天不再可用（执行失败）
         self.hire_friend_dead = False  # 好友雇佣今天不再可用（执行失败）
-        self._fc_bad_range_logged = False  # 时间段格式错误只记一次日志（due() 每轮都调）
-        self._hf_bad_time_logged = False   # 雇佣好友时间格式错误只记一次日志（同上）
-        self._ec_bad_range_logged = False  # 被雇佣时间段格式错误只记一次日志（同上）
         self._employed_last_check = None   # 上次被雇佣检查时间（interval_seconds 起算点）
         sched = self.school.cfg.schedule
         self.threshold = sched.coin_threshold
-        self.daily_hour_limit = sched.daily_hour_limit
         # 旧版点数系数：仅首次运行把老进度次数换算成时长用（不再参与调度）
         self.school_factor = sched.school_factor
         self.work_factor = sched.work_factor
         adv = self.school.cfg.adventure
         self.adventure_times = adv.times_per_day
-        start_time = adv.start_time
-        if isinstance(start_time, int):
-            # YAML 1.1 会把不带引号的 9:00 解析成分钟数 540，转回 HH:MM
-            start_time = f'{start_time // 60:02d}:{start_time % 60:02d}'
-        try:
-            self.adventure_start = datetime.strptime(start_time, '%H:%M').time()
-        except ValueError:
-            raise ValueError(
-                f'config.yaml 中 adventure.start_time 格式无效: {adv.start_time!r}，应为 HH:MM')
-        log(f'金币阈值: {self.threshold}，'
-            f'学习工作时长上限: {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时'
-            f'（学习按学园 10/20/30/45 分钟、打工按所选时长结算），'
-            f'冒险: 每天 {self.adventure_times} 次 @ {start_time}')
+        log(f'金币阈值: {self.threshold}，冒险: 每天 {self.adventure_times} 次')
         visit = self.school.cfg.visit
         self.visit_times = visit.times_per_day
-        self.visit_start = parse_hhmm(visit.start_time, 'visit.start_time')
         pk = self.school.cfg.pk
         self.pk_times = pk.times_per_day
-        self.pk_start = parse_hhmm(pk.start_time, 'pk.start_time')
-        log(f'踩踩: 每天 {self.visit_times} 次 @ {self.visit_start.strftime("%H:%M")}'
-            f'，PK: 每天 {self.pk_times} 次 @ {self.pk_start.strftime("%H:%M")}')
+        log(f'踩踩: 每天 {self.visit_times} 次，PK: 每天 {self.pk_times} 次')
 
     def _deferred(self, name: str) -> bool:
         """支线任务是否处于失败延后期（未到重新排期时间）。"""
         return datetime.now() < self.retry_after.get(name, datetime.min)
 
     def adventure_due(self) -> bool:
-        """是否该冒险了：已到调度时间、当天次数未满且不在失败延后期。"""
+        """是否该冒险了：当天次数未满且不在失败延后期。
+        不再有每日时间点：计划表（plan.items）说做冒险就做，次数由计划条目决定。"""
         if not self.adventure_times or self._deferred('冒险'):
             return False
         _, done, _ = load_progress(ADVENTURE_PROGRESS_FILE, quiet=True)
-        if done >= self.adventure_times:
-            return False
-        return datetime.now().time() >= self.adventure_start
+        return done < self.adventure_times
 
     def visit_due(self) -> bool:
-        """是否该踩踩了：已到调度时间、当天次数未满且不在失败延后期；
-        或踩满但经验日常未完成（需继续遍历好友做经验照顾）。"""
+        """是否该踩踩了：当天次数未满且不在失败延后期（计划表间隙执行）。"""
         if not self.visit_times or self._deferred('踩踩'):
             return False
         _, done, _ = load_progress(VISIT_PROGRESS_FILE, quiet=True)
-        if done >= self.visit_times and exp_daily_done():
-            return False
-        return datetime.now().time() >= self.visit_start
+        return done < self.visit_times
 
     def pk_due(self) -> bool:
-        """是否该 PK 了：已到调度时间、当天次数未满且不在失败延后期。"""
+        """是否该 PK 了：当天次数未满且不在失败延后期（计划表间隙执行）。"""
         if not self.pk_times or self._deferred('PK'):
             return False
         _, done, _ = load_progress(PK_PROGRESS_FILE, quiet=True)
-        if done >= self.pk_times:
-            return False
-        return datetime.now().time() >= self.pk_start
+        return done < self.pk_times
 
     def care_due(self) -> bool:
         """是否该做护理检查了：距上次检查已过 care.interval_seconds（默认 60 秒）。"""
@@ -231,56 +197,26 @@ class Runner:
         return last is None or datetime.now() >= last + timedelta(seconds=interval)
 
     def friend_care_due(self) -> bool:
-        """是否该好友护理了：已启用、配置了好友名称、当前时间在时间段内、
-        距上次巡检已过 friend_care.interval_seconds 且不在失败延后期。"""
+        """是否该好友护理了：已启用、当日经验日常未完成、距上次巡检已过
+        friend_care.interval_seconds 且不在失败延后期（全天可跑，无时间段限制）。"""
         fc = self.friend_care.cfg.friend_care
-        if not fc.enabled or not fc.friend_name.strip() or self._deferred('好友护理'):
+        if not fc.enabled or self._deferred('好友护理') or exp_daily_done():
             return False
         last = getattr(self.friend_care, 'last_care_at', None)
         interval = max(0, int(getattr(fc, 'interval_seconds', 1800) or 0))
-        if last is not None and datetime.now() < last + timedelta(seconds=interval):
-            return False
-        try:
-            start, end = parse_time_range(fc.time_range)
-        except ValueError as e:
-            if not self._fc_bad_range_logged:
-                log(f'{e}，好友护理不调度')
-                self._fc_bad_range_logged = True
-            return False
-        self._fc_bad_range_logged = False
-        return in_time_range(datetime.now().time(), start, end)
+        return last is None or datetime.now() >= last + timedelta(seconds=interval)
 
     def hire_friend_due(self) -> bool:
-        """是否该雇佣好友了：已启用、配置了好友名称、当前在雇佣时间段内、
-        距上次执行已过 hire_friend.interval_seconds、当天次数未满且不在失败延后期。
+        """是否该雇佣好友了：已启用且不在失败延后期（全天可跑，不限次数/间隔，
+        打工时每次都雇佣；雇佣 CD 未到由场景抛 TaskDeferred 延后，不原地等待）。
         纯查询无副作用：last_hire_at 由执行处记录——本方法每轮会被主任务组内
         多个任务的扫描重复调用（_main_choice），在判定里记时间会把雇佣卡死。"""
         hf = self.hire_friend.cfg.hire_friend
-        if (not hf.enabled or not hf.times_per_day or not hf.friend_name.strip()
-                or self._deferred('雇佣好友')):
-            return False
-        _, done, _ = load_progress(HIRE_FRIEND_PROGRESS_FILE, quiet=True)
-        if done >= hf.times_per_day:
-            return False
-        last = getattr(self.hire_friend, 'last_hire_at', None)
-        interval = max(1, int(getattr(hf, 'interval_seconds', 5) or 5))
-        if last is not None and datetime.now() < last + timedelta(seconds=interval):
-            return False
-        try:
-            start, end = parse_time_range(hf.time_range, 'hire_friend.time_range')
-        except ValueError as e:
-            if not self._hf_bad_time_logged:
-                log(f'{e}，好友雇佣不调度')
-                self._hf_bad_time_logged = True
-            return False
-        self._hf_bad_time_logged = False
-        if not in_time_range(datetime.now().time(), start, end):
-            return False
-        return True
+        return hf.enabled and not self._deferred('雇佣好友')
 
     def employed_due(self) -> bool:
-        """是否该被雇佣检查了：已启用、当前在被雇佣时间段内、
-        距上次检查已过 employed.interval_seconds 且不在失败延后期。"""
+        """是否该被雇佣检查了：已启用、距上次检查已过 employed.interval_seconds
+        且不在失败延后期（全天检查，无时间段限制）。"""
         ec = self.school.cfg.employed
         if not ec.enabled or self._deferred('被雇佣'):
             return False
@@ -288,27 +224,7 @@ class Runner:
         interval = max(1, int(getattr(ec, 'interval_seconds', 60) or 60))
         if last is not None and datetime.now() < last + timedelta(seconds=interval):
             return False
-        try:
-            start, end = parse_time_range(ec.time_range, 'employed.time_range')
-        except ValueError as e:
-            if not self._ec_bad_range_logged:
-                log(f'{e}，被雇佣检查不调度')
-                self._ec_bad_range_logged = True
-            return False
-        self._ec_bad_range_logged = False
-        return in_time_range(datetime.now().time(), start, end)
-
-    def employed_window_active(self) -> bool:
-        """被雇佣时间段是否生效中（开关打开且当前在时间段内）：
-        生效期间主任务（冒险/学习/打工/雇佣好友）不触发。"""
-        ec = self.school.cfg.employed
-        if not ec.enabled:
-            return False
-        try:
-            start, end = parse_time_range(ec.time_range, 'employed.time_range')
-        except ValueError:
-            return False
-        return in_time_range(datetime.now().time(), start, end)
+        return True
 
     def today_durations(self) -> tuple[int, int]:
         """当天已累计 (学习秒, 打工秒)；首次运行自动迁移老次数。"""
@@ -317,11 +233,6 @@ class Runner:
     def _load_durations(self) -> tuple[int, int]:
         """读取今日累计时长（带旧版系数迁移）。"""
         return load_durations(self.school_factor, self.work_factor)
-
-    def _duration_over(self, study_s: int, work_s: int) -> bool:
-        """学习+工作时长是否已达上限（daily_hour_limit，0=不限）。"""
-        limit = self.daily_hour_limit
-        return limit > 0 and study_s + work_s >= limit * 3600
 
     def read_main_coins(self) -> int | None:
         """回主页面 OCR 金币数量，失败返回 None。识别成功写状态缓存（GUI 状态条）。"""
@@ -463,7 +374,7 @@ class Runner:
             log(f'恢复失败: {e}')
             return False
         for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk,
-                     self.friend_care, self.hire_friend, self.employed):
+                     self.friend_care, self.hire_friend, self.employed, self.svip):
             scen.dev = dev
         log('恢复完成，继续调度')
         return True
@@ -482,13 +393,12 @@ class Runner:
         self._last_cfg = cfg
         sched = cfg.schedule
         self.threshold = sched.coin_threshold
-        self.daily_hour_limit = sched.daily_hour_limit
         self.school_factor = sched.school_factor
         self.work_factor = sched.work_factor
         # schedule 整体替换到各场景实例：check_interval / encourage_times /
         # main_page_checks / 金币阈值等全部热加载（设置页保存后下一轮即生效）
         for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk,
-                     self.friend_care, self.hire_friend, self.employed):
+                     self.friend_care, self.hire_friend, self.employed, self.svip):
             scen.cfg.schedule = sched
             # 控制方案热加载（各场景共享同一个 dev，同步一次即全部生效；
             # minitouch 会话懒加载，切换方案后下次点击自动按新方案走）
@@ -496,7 +406,7 @@ class Runner:
             # 被雇佣配置整体替换（开关/时间段/检查间隔/处理方式下一轮即生效）
             scen.cfg.employed = cfg.employed
             scen.cfg.recover.method = cfg.recover.method
-        # 好友护理/好友雇佣配置整体替换（启用开关/时间段/好友名称/方式/次数下一轮即生效）
+        # 好友护理/好友雇佣配置整体替换（启用开关/间隔下一轮即生效）
         self.friend_care.cfg.friend_care = cfg.friend_care
         self.hire_friend.cfg.hire_friend = cfg.hire_friend
 
@@ -506,15 +416,8 @@ class Runner:
         # （否则 _run_round 跑 adventure 时日志/内部上限还是旧值）
         self.adventure.times_per_day = adv.times_per_day
         self.adventure.skip_bad_weather = adv.skip_bad_weather
-        self.adventure.batch = adv.batch
-        start_time = adv.start_time
-        if isinstance(start_time, int):
-            # YAML 1.1 会把不带引号的 9:00 解析成分钟数 540，转回 HH:MM
-            start_time = f'{start_time // 60:02d}:{start_time % 60:02d}'
-        try:
-            self.adventure_start = datetime.strptime(start_time, '%H:%M').time()
-        except ValueError:
-            log(f'冒险时间格式无效 {start_time!r}，沿用旧值')
+        self.adventure.duration = str(getattr(adv, 'duration', None)
+                                      or self.adventure.duration)
 
         self.care.energy_threshold = cfg.care.energy_threshold
         self.care.clean_threshold = cfg.care.clean_threshold
@@ -538,29 +441,40 @@ class Runner:
         self.work.employ_scroll_limit = cfg.work.employ_scroll_limit
         self.visit.times_per_day = cfg.visit.times_per_day
         self.visit_times = cfg.visit.times_per_day
-        try:
-            self.visit_start = parse_hhmm(cfg.visit.start_time, 'visit.start_time')
-        except ValueError as e:
-            log(f'{e}，沿用旧值')
         self.pk.times_per_day = cfg.pk.times_per_day
         self.pk_times = cfg.pk.times_per_day
-        try:
-            self.pk_start = parse_hhmm(cfg.pk.start_time, 'pk.start_time')
-        except ValueError as e:
-            log(f'{e}，沿用旧值')
 
 
     def _try_moneybags(self) -> bool:
         # Optional, low-frequency work. Never trigger game/device recovery for it.
+        if not bool(getattr(self._last_cfg.runner, 'moneybag_enabled', True)):
+            return False
         from src.moneybag import MoneyBagCollector, INTERVAL
+        # 巡检间隔可在「成长福袋」卡片配置（runner.moneybag_interval_seconds）
+        interval = max(30, int(getattr(self._last_cfg.runner,
+                                       'moneybag_interval_seconds', INTERVAL) or INTERVAL))
+        # _moneybag_next 初值 0：启动后第一次调度就先检查一次，之后按间隔巡检
         if not hasattr(self, '_moneybag_next') or time.monotonic() < self._moneybag_next:
             return False
-        self._moneybag_next = time.monotonic() + INTERVAL
+        self._moneybag_next = time.monotonic() + interval
+        collector = None
         try:
-            return bool(MoneyBagCollector(self.school.dev).run())
+            collector = MoneyBagCollector(self.school.dev)
+            result = bool(collector.run())
         except Exception as exc:
             log(f'成长福袋巡检暂停：{exc}；稍后再检查')
-            return False
+            result = False
+        # 中途异常也已领到的金币同样要入账（否则累计会漏掉半途那几个）
+        coins = getattr(collector, 'coins', 0) if collector is not None else 0
+        if coins > 0:
+            # 累计金币（换账号/配置变更自动清零，见 progress.add_moneybag_coins）
+            try:
+                from src.status_cache import load_accounts
+                acc = load_accounts().get('default') or {}
+            except Exception:
+                acc = {}
+            add_moneybag_coins(coins, pet_name=acc.get('pet_name'))
+        return result
 
     def _ensure_pet_page_or_relaunch(self) -> None:
         '''真机启动检查：识别不到宠物主页面时，不在当前页面按 back（可能根本不在游戏里，
@@ -569,7 +483,7 @@ class Runner:
         配置影响，不重启设备）。失败发告警退出（主页都进不去后续任务无从谈起）。'''
         try:
             screen, source = self.school.snapshot()
-            if self.school.see('main_sign', screen, source):
+            if self.school._on_main_page(screen, source):
                 log('启动检查：已在宠物主页面')
                 return
         except Exception as e:
@@ -581,7 +495,7 @@ class Runner:
             self._alert_and_exit(f'启动进入宠物页失败: {e}')
             return
         for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk,
-                     self.friend_care, self.hire_friend, self.employed):
+                     self.friend_care, self.hire_friend, self.employed, self.svip):
             scen.dev = dev
         log('启动检查：已进入宠物主页面')
 
@@ -619,9 +533,6 @@ class Runner:
 
                 self._try_moneybags()
 
-                # 被雇佣时间段内主任务（冒险/学习/打工/雇佣好友）不触发
-                suppress_main = self.employed_window_active()
-
                 # 被雇佣检查：到达检查间隔出门看是否被雇佣中，是则按配置召回
                 if self.employed_due():
                     log('到达被雇佣检查时间，出门检查是否被雇佣中')
@@ -638,9 +549,9 @@ class Runner:
                     self._employed_last_check = datetime.now()
                     continue
 
-                # 冒险优先：到达调度时间且当天次数未满
-                if not suppress_main and not adventure_dead and self.adventure_due():
-                    log('到达冒险调度时间，优先处理冒险')
+                # 冒险优先：当天次数未满（不再有每日时间点）
+                if not adventure_dead and self.adventure_due():
+                    log('处理冒险（当天次数未满）')
                     try:
                         done = self.run_one(self.adventure, '冒险', fatal=False)
                     except ScenarioFailed:
@@ -650,15 +561,14 @@ class Runner:
                         if done:
                             _, adv_done, _ = load_progress(ADVENTURE_PROGRESS_FILE, quiet=True)
                             if adv_done >= self.adventure_times:
-                                log(f'今日冒险 {adv_done}/{self.adventure_times} 次已满，'
-                                    f'明天 {self.adventure_start.strftime("%H:%M")} 后再冒险')
+                                log(f'今日冒险 {adv_done}/{self.adventure_times} 次已满')
                             continue
                         adventure_dead = True
                         log('冒险当天不可继续')
 
-                # 踩踩：到达调度时间且当天次数未满
+                # 踩踩：当天次数未满
                 if not self.visit_dead and self.visit_due():
-                    log('到达踩踩调度时间，处理踩踩')
+                    log('处理踩踩（当天次数未满）')
                     try:
                         done = self.run_one(self.visit, '踩踩', fatal=False)
                     except ScenarioFailed:
@@ -670,9 +580,9 @@ class Runner:
                         self.visit_dead = True
                         log('踩踩当天不可继续')
 
-                # PK：到达调度时间且当天次数未满
+                # PK：当天次数未满
                 if not self.pk_dead and self.pk_due():
-                    log('到达 PK 调度时间，处理 PK')
+                    log('处理 PK（当天次数未满）')
                     try:
                         done = self.run_one(self.pk, 'PK', fatal=False)
                     except (PKDeferred, ScenarioFailed):
@@ -693,9 +603,9 @@ class Runner:
                         self.pk_dead = True
                         log('PK 当天不可继续')
 
-                # 好友雇佣：到达调度时间且当天次数未满（雇佣 CD 未到时场景抛
+                # 好友雇佣：全天可跑，不限次数（雇佣 CD 未到时场景抛
                 # TaskDeferred 延后 60 秒复测，不原地等待）
-                if not suppress_main and not self.hire_friend_dead and self.hire_friend_due():
+                if not self.hire_friend_dead and self.hire_friend_due():
                     log('到达雇佣好友调度时间，处理好友雇佣')
                     self.hire_friend.last_hire_at = datetime.now()  # 调度间隔从实际执行起算
                     try:
@@ -742,52 +652,24 @@ class Runner:
                         self.friend_care_dead = True
                         log('好友护理当天不可继续')
 
-                if suppress_main:
-                    # 被雇佣时间段内主任务（学习/打工）不触发：睡到下次被雇佣检查
-                    # （醒来到点由循环顶部的被雇佣检查处理，支线任务下轮仍可调度）
-                    ec = self.school.cfg.employed
-                    time.sleep(max(1, int(getattr(ec, 'interval_seconds', 60) or 60)))
-                    continue
-
                 study_s, work_s = self._load_durations()
-                over_limit = self._duration_over(study_s, work_s)
-                log(f'今日时长: 已学习 {study_s // 60} 分钟 + 已打工 {work_s // 60} 分钟'
-                    f' = {(study_s + work_s) // 60} 分钟'
-                    f' / 上限 {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时')
-                if over_limit:
-                    # 学习+工作时长达上限：今天不再学习，只打工直到第二天清零
-                    log('学习工作时长已达上限，今天不再学习，只打工')
+                log(f'今日时长: 已学习 {study_s // 60} 分钟 + 已打工 {work_s // 60} 分钟')
 
                 try:
-                    coins = None if over_limit else self.read_main_coins()
+                    coins = self.read_main_coins()
                 except RuntimeError as e:
                     log(f'金币读取失败: {e}，默认先去打工')
                     coins = None
-                prefer_school = not over_limit and coins is not None and coins >= self.threshold
-                if not over_limit:
-                    if coins is None:
-                        log('金币识别失败，默认先去打工')
-                    elif prefer_school:
-                        log(f'金币 {coins} >= 阈值 {self.threshold}，去学习')
-                    else:
-                        log(f'金币 {coins} < 阈值 {self.threshold}，先去打工')
+                prefer_school = coins is not None and coins >= self.threshold
+                if coins is None:
+                    log('金币识别失败，默认先去打工')
+                elif prefer_school:
+                    log(f'金币 {coins} >= 阈值 {self.threshold}，去学习')
+                else:
+                    log(f'金币 {coins} < 阈值 {self.threshold}，先去打工')
 
                 first = (self.school, '学习', school_dead) if prefer_school else (self.work, '打工', work_dead)
                 second = (self.work, '打工', work_dead) if prefer_school else (self.school, '学习', school_dead)
-                if over_limit:
-                    # 学习工作时长达上限时只打工，不回退到学习
-                    if work_dead:
-                        if self._wait_for_deferred(adventure_dead):
-                            continue
-                        log('打工当天已达上限，结束')
-                        return
-                    if not self.run_one(self.work, '打工'):
-                        work_dead = True
-                        if self._wait_for_deferred(adventure_dead):
-                            continue
-                        log('打工当天已达上限，结束')
-                        return
-                    continue
                 if not first[2] and self.run_one(first[0], first[1]):
                     continue
                 if not first[2]:
@@ -820,11 +702,11 @@ class Runner:
 
 TASK_NAMES = {'care': '护理', 'adventure': '冒险', 'visit': '踩踩', 'pk': 'PK',
               'hire_friend': '雇佣好友', 'friend_care': '好友护理',
-              'school': '学习', 'work': '打工'}
+              'school': '学习', 'work': '打工', 'svip': 'SVIP礼包'}
 # 支线任务（异常重排期/主任务结束后可等待的任务）。
 # 注：雇佣好友属于主任务组（互斥统一调度），但失败处理仍按支线语义
 # （回主页面 + failure_interval 退避重试，不发告警不退出）
-SIDE_TASK_KEYS = ('adventure', 'visit', 'pk', 'hire_friend', 'friend_care')
+SIDE_TASK_KEYS = ('adventure', 'visit', 'pk', 'hire_friend', 'friend_care', 'svip')
 # 主任务组键定义在 src/config.py 的 MAIN_TASK_KEYS（GUI 设置校验也用）
 # 没有任务可执行且没有明确等待点时的短轮询间隔（秒），顺带热加载配置
 QUEUE_POLL_INTERVAL = 30
@@ -845,7 +727,6 @@ class _QueueTask:
         self.cfg = TaskItemConfig()
         self.next_at = datetime.min  # 间隔/退避的最早可执行时间
         self.dead = False            # run() 返回 False（当天上限等），当天不再可用
-        self.window: datetime | None = None  # daily trigger：当前服务的每日时间点
 
 
 def _parse_clock(value, field: str):
@@ -877,32 +758,31 @@ def _in_clock_range(now, start, end) -> bool:
 
 
 class TaskQueueRunner(Runner):
-    """任务队列调度：按 config.yaml 的 tasks.order 顺序扫描，执行第一个可执行的任务。
+    """计划表驱动的调度器：先按 plan.items 循环执行主任务，间隙补间隔任务。
 
     与 legacy 主循环的差异：
-    - 执行顺序完全由 tasks.order 配置（> 分隔，越靠前越优先），不在 order 里的任务不调度；
-    - 每个任务有独立的调度设置（tasks.<任务名>）：enabled 开关、trigger
-      （interval=按间隔秒数 / daily=按每日时间点列表，到点打开执行窗口，窗口内可反复执行
-      直到任务返回 False；下一个时间点会重新打开窗口并清除当天不可继续标记）、
+    - **主任务由每日计划表决定**（plan.items 第一条没做完的条目），tasks.order
+      只决定支线任务的先后；
+    - 每个任务有独立的调度设置（tasks.<任务名>）：enabled 开关、
       enabled_time_range 执行时间窗、success_interval / failure_interval 成功/失败退避；
+      **没有每日时间点**——任务到点与否只看开关、时间窗、当天配额和退避；
     - 冒险/学习/打工/雇佣好友互斥（共用"出门-进行中"一条线，不能同时做），作为**主任务组
-      统一调度**：组内优先级由 tasks.main_order 配置（默认 学习>雇佣好友>冒险>打工），
-      按顺序判定——冒险（到点且次数未满）/ 学习（点数未超限且金币 >= 阈值，
-      或打工当天不可继续时回退）/ 雇佣好友（到点且次数未满）/ 打工（兜底，始终可执行），
-      不受 tasks.order 里四者相对位置影响；四者当天都结束后调度器才退出
-      （等支线退避，没有则退出）；
+      统一调度**：按列表顺序找第一条没做完的（按次数/按时长，口径与 GUI 计划页一致），
+      条目是学习/冒险就执行对应任务、是打工就优先雇佣好友（打工时每次都雇佣）再普通
+      打工兜底；条目全部完成（或计划停用）主任务组当天结束，调度器只等支线退避后退出；
+    - 每轮**先跑计划当前条目的主任务**，跑不了（进行中延时收尾/退避/当天不可继续）
+      才补间隔任务：护理（活动前置）-> 成长福袋 -> SVIP/好友护理/踩踩/PK；
+      不需要出门的任务还能在宠物学习/打工/冒险期间照常跑；
     - 主任务组**非阻塞等待**（延时收尾）：出发后识别到进行中状态（"正在学习"等）时
-      OCR 剩余时间（"剩余00:02:50"）登记场景的 pending（参考 qq-farm-copilot 的
-      倒计时调度），立即回主页面调度其他任务；到点由 _main_choice 调
-      finish_pending() 收尾计数后再选下一个主任务；组内有 pending 且未到收尾时间时
+      OCR 剩余时间登记场景的 pending，立即回主页面调度其他任务；到点由 _main_choice 调
+      finish_pending() 收尾计数后再选下一个计划条目；组内有 pending 且未到收尾时间时
       本轮不调度主任务（跳过，先去跑支线）；
-    - 没有任务可执行时睡到最近的等待点（退避/每日窗口/pending 收尾时间，上限
+    - 没有任务可执行时睡到最近的等待点（退避/pending 收尾时间，上限
       QUEUE_POLL_INTERVAL 轮询，顺带热加载配置）；主任务组当天结束后只等支线任务的
       失败退避，没有则退出调度器；
-    - 被雇佣检查（employed.enabled 开启时）不在 tasks.order 里：被雇佣时间段内
-      按 employed.interval_seconds 间隔优先于队列任务出门检查，被雇佣中则按
-      employed.action 召回；被雇佣时间段内主任务组不触发（_main_choice 返回 None，
-      pending 收尾不受影响）。
+    - 被雇佣检查（employed.enabled 开启时）不在 tasks.order 里：全天按
+      employed.interval_seconds 间隔优先于队列任务出门检查，被雇佣中则按
+      employed.action 召回。
     """
 
     def __init__(self, *args, **kwargs):
@@ -922,7 +802,12 @@ class TaskQueueRunner(Runner):
         order: list[str] = []
         self._apply_tasks_config(tasks, order)
         self._sched_day = datetime.now().date()  # 调度日期：跨天时清除任务"当天不可继续"标记
-        log(f'任务队列调度已启用，执行顺序: {" > ".join(TASK_NAMES[k] for k in order)}')
+        # SVIP 礼包：启动固定领一次（无会员/领取失败自动跳过），非会员自动关闭的
+        # 复查也在这里做（恢复会员自动重开任务），之后不再按每日时间点调度
+        self._svip_nonmember_recheck()
+        self._svip_startup_claim()
+        log('调度已启用：先按每日计划表循环执行主任务，'
+            '计划间隙/等待时执行护理、好友护理、踩踩、PK 等间隔任务')
         while True:
             try:
                 # 热修改：每轮调度前重读配置（含 tasks.order 与各任务调度设置）
@@ -964,6 +849,10 @@ class TaskQueueRunner(Runner):
         if not new_order:
             log('tasks.order 为空或全部无效，使用默认顺序')
             new_order = list(TASK_KEYS)
+        # SVIP 礼包改为启动固定领一次（无会员/领取失败自动跳过），不再按每日
+        # 时间点进队列调度（2026-10-20）
+        if 'svip' in new_order:
+            new_order.remove('svip')
         # Removed main tasks must not remain candidates and block the new order.
         # Running activities retain their pending state on the scenario itself.
         for key in list(tasks):
@@ -998,12 +887,9 @@ class TaskQueueRunner(Runner):
         """跨天（日期变化）时清除各任务"当天不可继续"标记。
 
         队列任务的 dead 表示"当天配额用尽/当天不可继续"，进度按天持久化、
-        第二天自动清零，dead 也应随之失效。但 interval 触发任务（学习/打工/
-        雇佣好友等）的 dead 没有自动重开机制（daily 触发任务会在下一个每日
-        时间点由 _eligible 重开窗口并清 dead），一旦在 23:59 学到当天上限被
-        标记 dead，第二天会一直不可调度——主任务组只剩打工兜底，整晚/整天
-        只打工，直到重启调度器。这里每轮调度前检测日期变化，统一清除所有
-        任务的 dead（daily 任务即使清了 dead 仍受每日时间点窗口约束）。
+        第二天自动清零，dead 也应随之失效（没有每日时间点自动重开窗口的机制了）。
+        否则一旦在 23:59 学到当天上限被标记 dead，第二天会一直不可调度，
+        直到重启调度器。这里每轮调度前检测日期变化，统一清除所有任务的 dead。
         """
         today = datetime.now().date()
         if self._sched_day is None:
@@ -1021,32 +907,8 @@ class TaskQueueRunner(Runner):
 
     # ---- 可执行判定 ----
 
-    def _latest_daily_time(self, daily_times: list, now: datetime) -> datetime | None:
-        """daily trigger：今天已到点的最近一个每日时间点（没有返回 None）。"""
-        latest = None
-        for value in daily_times or []:
-            try:
-                dt = datetime.combine(now.date(), _parse_clock(value, 'daily_times'))
-            except ValueError as e:
-                log(f'{e}，忽略该时间点')
-                continue
-            if dt <= now and (latest is None or dt > latest):
-                latest = dt
-        return latest
-
-    def _next_daily_time(self, daily_times: list, now: datetime) -> datetime | None:
-        """daily trigger：下一个每日时间点（今天没到点的，否则明天最早一个）。"""
-        future = []
-        for value in daily_times or []:
-            try:
-                dt = datetime.combine(now.date(), _parse_clock(value, 'daily_times'))
-            except ValueError:
-                continue
-            future.append(dt if dt > now else dt + timedelta(days=1))
-        return min(future) if future else None
-
     def _eligible(self, task: _QueueTask, now: datetime) -> bool:
-        """任务当前是否可进入执行判定：开关、执行时间窗、trigger 窗口、退避间隔。"""
+        """任务当前是否可进入执行判定：开关、执行时间窗、当天可用、退避间隔。"""
         cfg = task.cfg
         if not cfg.enabled:
             return False
@@ -1057,16 +919,6 @@ class TaskQueueRunner(Runner):
             return False
         if not _in_clock_range(now.time(), start, end):
             return False
-        if cfg.trigger == 'daily':
-            latest = self._latest_daily_time(cfg.daily_times, now)
-            if latest is None:
-                return False
-            if task.window is None or task.window < latest:
-                # 新每日时间点：打开执行窗口，清除当天不可继续标记
-                task.window = latest
-                task.dead = False
-                task.next_at = datetime.min
-                log(f'{task.name}: 到达每日时间点 {latest:%H:%M}，打开执行窗口')
         if task.dead:
             return False
         return now >= task.next_at
@@ -1084,51 +936,111 @@ class TaskQueueRunner(Runner):
                 return scen
         return None
 
-    def _school_due(self, tasks: dict, ctx: dict) -> bool:
-        """学习是否可执行（主任务组内）：学习工作时长未达上限，且金币 >= 阈值
-        （金币识别失败/不足时本来该打工；打工当天不可继续才回退学习）。
+    # ---- 每日计划表 ----
 
-        点数/金币每轮循环只读一次（ctx 缓存）：金币读取要截图 OCR，不能每个任务读一次。
-        """
-        if ctx.get('durations') is None:
-            study_s, work_s = self._load_durations()
-            ctx['durations'] = (study_s, work_s)
-            log(f'今日时长: 已学习 {study_s // 60} 分钟 + 已打工 {work_s // 60} 分钟'
-                f' = {(study_s + work_s) // 60} 分钟'
-                f' / 上限 {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时')
-        study_s, work_s = ctx['durations']
-        over_limit = self._duration_over(study_s, work_s)
-        if over_limit:
-            if not ctx.get('over_logged'):
-                ctx['over_logged'] = True
-                log('学习工作时长已达上限，今天不再学习，只打工')
-            return False
-        if ctx.get('coins', _COINS_UNSET) is _COINS_UNSET:
+    def _plan_progress(self, ctx: dict) -> tuple[dict, dict]:
+        """今天三项活动的 (次数, 秒数)，与 GUI 计划页 _refresh_plan_page 同一口径：
+        counts=进度文件当天次数；seconds=学习/打工累计时长，冒险=次数×单次时长。
+        每次扫描只读一次（ctx 缓存），避免主任务组每个任务各读一遍进度文件。"""
+        cached = ctx.get('plan_progress')
+        if cached is not None:
+            return cached
+        counts = {}
+        for key, path in (('school', SCHOOL_PROGRESS_FILE), ('work', WORK_PROGRESS_FILE),
+                          ('adventure', ADVENTURE_PROGRESS_FILE)):
             try:
-                ctx['coins'] = self.read_main_coins()
-            except RuntimeError as e:
-                log(f'金币读取失败: {e}，默认先去打工')
-                ctx['coins'] = None
-            coins = ctx['coins']
-            if coins is None:
-                log('金币识别失败，默认先去打工')
-            elif coins >= self.threshold:
-                log(f'金币 {coins} >= 阈值 {self.threshold}，去学习')
+                _, done, _ = load_progress(path, quiet=True)
+            except Exception:
+                done = 0
+            counts[key] = int(done)
+        try:
+            study_s, work_s = self._load_durations()
+        except Exception:
+            study_s = work_s = 0
+        # 冒险单次时长按分段配置估算（与 GUI 统计口径一致）；配置非法时按 45 秒兜底
+        adv_est = duration_seconds(getattr(self._last_cfg.adventure, 'duration', '')) or 45
+        seconds = {'school': study_s, 'work': work_s,
+                   'adventure': counts['adventure'] * adv_est}
+        ctx['plan_progress'] = (counts, seconds)
+        return counts, seconds
+
+    def _plan_current(self, ctx: dict, quiet: bool = False):
+        """计划表里第一条没做完的条目（口径同 GUI：按次数 done<count，
+        按时长 seconds<hours*3600）；全部完成或计划停用返回 None。
+        quiet=True 时不打"今日计划已完成"（状态刷新等旁路调用用）。"""
+        plan = getattr(self._last_cfg, 'plan', None)
+        if plan is None or not plan.enabled or not plan.items:
+            return None
+        cached = ctx.get('plan_item', _COINS_UNSET)
+        if cached is not _COINS_UNSET:
+            return cached
+        counts, seconds = self._plan_progress(ctx)
+        item = None
+        for plan_item in plan.items:
+            if plan_item.mode == 'count':
+                done_value = counts.get(plan_item.activity, 0)
+                target = max(1, int(plan_item.count))
             else:
-                log(f'金币 {coins} < 阈值 {self.threshold}，先去打工')
-        if ctx['coins'] is not None and ctx['coins'] >= self.threshold:
-            return True
-        return self._dead(tasks, 'work')  # 打工不可继续且点数未超限，回退学习
+                done_value = seconds.get(plan_item.activity, 0)
+                target = max(1, int(round(float(plan_item.hours) * 3600)))
+            if done_value < target:
+                item = plan_item
+                break
+        ctx['plan_item'] = item
+        if item is None and not quiet:
+            log('今日计划已完成（所有条目都达到目标）')
+        return item
+
+    def _executor_ready(self, key: str, tasks: dict, now: datetime) -> bool:
+        """计划条目对应的执行任务当前能否开跑（在 order 里、开关开、未 dead、退避到点）。"""
+        task = tasks.get(key)
+        return task is not None and self._eligible(task, now)
+
+    def _executor_alive(self, key: str, tasks: dict) -> bool:
+        """执行任务当天还能继续做（存在且未 dead，不看退避时间）。"""
+        task = tasks.get(key)
+        return task is not None and not task.dead
+
+    def _work_executors(self) -> list[str]:
+        """打工条目的执行器顺序：雇佣好友（打工时每次都雇佣）优先，普通打工兜底。"""
+        keys = [k for k in self._main_order if k in ('hire_friend', 'work')]
+        return keys or ['hire_friend', 'work']
+
+    def _apply_plan_item(self, item) -> None:
+        """把计划条目的活动参数落到场景实例（留空回落分段配置），并解除旧的
+        每日次数上限——计划表就是配额（按次数/按时长），场景内不再二次限制。
+        每次执行前覆盖：reload_config 每轮会把场景参数重置回分段配置。"""
+        cfg = self._last_cfg
+        if item.activity == 'school':
+            attribute = item.attribute or cfg.school.attribute
+            if attribute in ATTRIBUTE_COURSES:
+                self.school.attribute = attribute
+            self.school.times_per_day = 0
+        elif item.activity == 'work':
+            self.work.location = item.work_location or cfg.work.location
+            duration = item.work_duration or cfg.work.duration
+            if duration in DURATION_BOXES:
+                self.work.duration = duration
+            self.work.times_per_day = 0
+            # 雇佣好友执行打工时读 cfg.work（地点/时长），一起覆盖
+            self.hire_friend.cfg.work.location = self.work.location
+            self.hire_friend.cfg.work.duration = self.work.duration
+        elif item.activity == 'adventure':
+            duration = item.adventure_duration or cfg.adventure.duration
+            if duration in ADVENTURE_DURATION_OPTIONS:
+                self.adventure.duration = duration
+            self.adventure.times_per_day = 0
 
     def _main_choice(self, tasks: dict, ctx: dict) -> str | None:
         """主任务组（冒险/学习/打工/雇佣好友，互斥不能同时做）本轮该执行哪个。
 
         组内有 pending（进行中活动延时收尾）时：未到收尾时间返回 None（本轮不调度
-        主任务，先去跑支线）；到点调 finish_pending() 收尾计数，还没结束（已重估
-        收尾时间）也返回 None，收尾完成本轮继续选择下一个主任务。
-        否则按 tasks.main_order 顺序判定：冒险（到点且当天次数未满）/ 学习
-        （点数未超限且金币 >= 阈值，或打工不可继续时回退）/ 雇佣好友（到点且
-        次数未满）/ 打工（兜底，当天可继续就可执行）。都不可以返回 None。
+        主任务，先去跑支线——踩踩/PK 等正好填计划表的间隙）；到点调
+        finish_pending() 收尾计数，还没结束（已重估收尾时间）也返回 None，
+        收尾完成本轮继续选择下一个计划条目。
+        否则按**每日计划表**：第一条没做完的条目决定做什么——学习/冒险执行对应
+        任务，打工优先雇佣好友再普通打工兜底；条目对应任务当天不可继续（dead）
+        返回 None（由 _main_finished 判定主任务组结束）。
         """
         pend = self._main_pending_scen()
         if pend is not None:
@@ -1136,29 +1048,58 @@ class TaskQueueRunner(Runner):
                 return None  # 还没到收尾时间，本轮不调度主任务
             if not pend.finish_pending():
                 return None  # 尚未结束（已重估收尾时间），本轮继续等
-            # 收尾完成（已计数），本轮继续选择下一个主任务
-        if self.employed_window_active():
-            return None  # 被雇佣时间段内主任务不触发
+            # 收尾完成（已计数），本轮继续选择下一个计划条目
+        item = self._plan_current(ctx)
+        if item is None:
+            return None
         now = datetime.now()
-        for key in self._main_order:
-            task = tasks.get(key)
-            # 跳过不可执行的任务（不在 order / 当天不可继续 / 退避未到点）：
-            # 否则幻影命中（如雇佣好友 CD 复测退避 60 秒，但 hire_friend_due 的
-            # 调度间隔只有几秒）会把排它后面的主任务（冒险/打工）全部卡住
-            if task is None or not self._eligible(task, now):
-                continue
-            if key == 'adventure':
-                if self.adventure_due():
-                    return 'adventure'
-            elif key == 'school':
-                if self._school_due(tasks, ctx):
-                    return 'school'
-            elif key == 'hire_friend':
-                if self.hire_friend_due():
-                    return 'hire_friend'
-            elif key == 'work':
-                return 'work'  # 兜底：打工当天可继续就可执行
-        return None
+        if item.activity == 'work':
+            for key in self._work_executors():
+                # 跳过不可执行的任务（不在 order / 当天不可继续 / 退避未到点）：
+                # 否则雇佣好友 CD 复测的退避会把打工条目卡住
+                if self._executor_ready(key, tasks, now):
+                    return key
+            return None
+        return item.activity if self._executor_ready(item.activity, tasks, now) else None
+
+
+    def _svip_nonmember_recheck(self) -> None:
+        """非会员自动关闭状态的启动复查：探测会员状态，恢复会员就自动重开任务。
+
+        只在 tasks.svip 开关是关、且带"非会员自动关闭"标记时探测（每次启动最多
+        一次）。手动关开关（无标记）不会触发探测，尊重用户的选择。
+        """
+        if not svip_nonmember_flag():
+            return
+        if load_config().tasks.svip.enabled:
+            return
+        log('SVIP礼包: 处于非会员自动关闭状态，探测一次会员状态...')
+        try:
+            member = self.svip.probe_membership()
+        except Exception as e:
+            log(f'SVIP 会员状态探测失败: {e}')
+            return
+        if member:
+            from src.settings import load_raw, save_raw, set_value
+            data = load_raw()
+            set_value(data, 'tasks.svip.enabled', True)
+            save_raw(data)
+            log('复查结果: 当前账号已是 SVIP 会员，已自动重新开启 SVIP礼包 任务')
+        elif member is False:
+            log('复查结果: 仍未开通 SVIP 会员，继续保持任务关闭')
+        else:
+            log('复查结果: 未能识别礼包弹窗')
+
+    def _svip_startup_claim(self) -> None:
+        """SVIP 礼包启动固定领一次：无会员/领取失败只记日志跳过，不重试不告警
+        （游戏本身每天只能领一次，重复启动会因当日已领被场景自行跳过）。"""
+        if not load_config().tasks.svip.enabled:
+            return
+        log('SVIP礼包: 启动领取一次...')
+        try:
+            self.run_one(self.svip, 'SVIP礼包', fatal=False)
+        except ScenarioFailed as e:
+            log(f'SVIP礼包 领取失败，自动跳过: {e}')
 
     def _task_due(self, key: str, tasks: dict, ctx: dict) -> bool:
         """任务自身的执行条件（配额/场景时间窗/主任务组统一判定），在 _eligible 之后判定。"""
@@ -1173,6 +1114,9 @@ class TaskQueueRunner(Runner):
             return self.pk_due()
         if key == 'friend_care':
             return self.friend_care_due()
+        if key == 'svip':
+            # 每天领取一次：领取成功/确认已领后当天进度置位，之后不再执行
+            return not svip_claimed_today()
         return False
 
     # ---- 执行 ----
@@ -1196,8 +1140,12 @@ class TaskQueueRunner(Runner):
         return None
 
     def _run_first_due(self, tasks: dict, order: list) -> bool:
-        """按 order 扫描，执行第一个可执行的任务，返回是否执行了任务。
-        被雇佣检查不在 tasks.order 里：到点优先于队列任务先检查。"""
+        """执行一轮：**计划表优先**，计划主任务跑不了时才补间隔任务。
+
+        顺序：被雇佣检查 -> pending 收尾 -> 护理（活动前置）-> 当前计划条目的主任务
+        -> 成长福袋 -> 其余间隔/支线任务（SVIP/好友护理/踩踩/PK）。
+        tasks.order 现在只决定支线的先后，主任务由计划表决定。
+        """
         now = datetime.now()
         if self.employed_due():
             self._run_employed_check(tasks, order, now)
@@ -1208,14 +1156,25 @@ class TaskQueueRunner(Runner):
             return True
         if pend_act == 'wait':
             return False  # 本轮不执行任务 -> _sleep_until_next 睡到收尾点
-        # 成长福袋不受踩踩配额影响；学习/打工一分钟内要收尾时让路。
-        pend = self._main_pending_scen()
+        # 1) 护理是活动前置：体力/清洁不够直接开活动会白跑一轮
         care = tasks.get('care')
-        care_ready = care is not None and self._eligible(care, now) and self.care_due()
-        if not care_ready and (pend is None or (pend.pending['until']-now).total_seconds() > 60):
+        if care is not None and self._eligible(care, now) and self.care_due():
+            self._execute(care, tasks, now, order)
+            return True
+        ctx: dict = {}  # 本轮循环的 点数/金币 缓存（_main_choice 用）
+        # 2) 计划表当前条目的主任务：优先于所有零散任务
+        main_key = self._main_choice(tasks, ctx)
+        if main_key is not None:
+            task = tasks.get(main_key)
+            if task is not None and self._eligible(task, now):
+                self._execute(task, tasks, now, order)
+                return True
+        # 3) 成长福袋不受踩踩配额影响；学习/打工一分钟内要收尾时让路。
+        pend = self._main_pending_scen()
+        if pend is None or (pend.pending['until'] - now).total_seconds() > 60:
             if self._try_moneybags():
                 return True
-        ctx: dict = {}  # 本轮循环的 点数/金币 缓存（_main_due 用）
+        # 4) 其余间隔/支线任务
         for key in order:
             task = tasks[key]
             if not self._eligible(task, now):
@@ -1266,11 +1225,16 @@ class TaskQueueRunner(Runner):
             return
         scen = {'adventure': self.adventure, 'visit': self.visit, 'pk': self.pk,
                 'hire_friend': self.hire_friend, 'friend_care': self.friend_care,
-                'school': self.school, 'work': self.work}[task.key]
+                'school': self.school, 'work': self.work, 'svip': self.svip}[task.key]
         if task.key == 'hire_friend':
             # 调度间隔从实际执行起算（不在 hire_friend_due 判定里记：_main_choice
             # 每轮会被同组任务的扫描重复评估，查询副作用会把雇佣好友卡死）
             self.hire_friend.last_hire_at = datetime.now()
+        if task.key in MAIN_TASK_KEYS:
+            # 计划条目里的属性/地点/单次时长落到场景（留空回落分段配置）
+            item = self._plan_current({})
+            if item is not None:
+                self._apply_plan_item(item)
         try:
             produced = self.run_one(scen, task.name, fatal=task.key in ('school', 'work'))
         except PKDeferred:
@@ -1328,13 +1292,13 @@ class TaskQueueRunner(Runner):
     def _write_queue_status(self, tasks: dict, order: list) -> None:
         """把队列状态写 runs/queue_status.json，供 GUI 日志页状态条显示。
 
-        待执行 = 启用且未结束、在等退避/每日窗口的任务数（到了时间点待执行），
+        待执行 = 启用且未结束、在等退避的任务数（到点待执行），
         主任务组 pending（进行中活动延时收尾）也算一个待执行项；
-        等待中 = 启用且未结束、当前通过 _eligible（时间窗/trigger 窗口/退避）、
+        等待中 = 启用且未结束、当前通过 _eligible（时间窗/退避）、
         等待调度器轮到它的任务数；
-        下一任务 = 最近等待点（退避时间/下一个每日时间点/pending 收尾时间）对应的任务。
+        下一任务 = 最近等待点（退避时间/pending 收尾时间）对应的任务。
         tasks 字段按任务记录状态（GUI"调度"选项卡用）：disabled/dead/ready/waiting
-        + 下次执行时间（dead 的 daily 任务取下一个每日时间点）。
+        + 下次执行时间（dead 任务当天不再执行，留空）。
         """
         now = datetime.now()
         ready = waiting = 0
@@ -1348,25 +1312,16 @@ class TaskQueueRunner(Runner):
                 task_states[key] = {'state': 'disabled', 'next': ''}
                 continue
             if task.dead:
-                # daily 任务在下一个每日时间点复活，也算下次执行时间
-                nxt = (self._next_daily_time(cfg.daily_times, now)
-                       if cfg.trigger == 'daily' else None)
-                task_states[key] = {'state': 'dead',
-                                    'next': nxt.strftime('%Y-%m-%d %H:%M:%S') if nxt else ''}
+                task_states[key] = {'state': 'dead', 'next': ''}
                 continue
             if self._eligible(task, now):
                 # 现在就能跑、在等调度器轮到 -> 等待中
                 waiting += 1
                 task_states[key] = {'state': 'ready', 'next': ''}
                 continue
-            # 在等退避/每日时间点 -> 待执行
+            # 在等退避 -> 待执行
             ready += 1
-            # 最近的等待点：退避时间 / 下一个每日时间点
             cand = task.next_at if task.next_at > now else None
-            if cfg.trigger == 'daily':
-                nxt = self._next_daily_time(cfg.daily_times, now)
-                if nxt and (cand is None or nxt < cand):
-                    cand = nxt
             task_states[key] = {'state': 'waiting',
                                 'next': cand.strftime('%Y-%m-%d %H:%M:%S') if cand else ''}
             if cand and (next_at is None or cand < next_at):
@@ -1380,6 +1335,16 @@ class TaskQueueRunner(Runner):
             until = pend.pending['until']
             if next_at is None or until < next_at:
                 next_at, next_name = until, f'{pending_desc}收尾'
+        # 计划表当前条目现在就能跑时，"下一任务"就是它——计划优先于支线重试点，
+        # 否则界面会显示"护理 00:38:33"这种支线时间点，看着像旧队列逻辑
+        if self._main_pending_scen() is None:
+            item = self._plan_current({}, quiet=True)
+            if item is not None:
+                keys = self._work_executors() if item.activity == 'work' else [item.activity]
+                for key in keys:
+                    if key in tasks and self._executor_ready(key, tasks, now):
+                        next_at, next_name = None, f'{TASK_NAMES.get(key, key)}（计划条目）'
+                        break
         save_queue_status({
             'current': self._current_task or '',
             'pending': pending_desc,
@@ -1395,48 +1360,30 @@ class TaskQueueRunner(Runner):
 
     # ---- 等待 ----
 
-    def _adventure_done(self, tasks: dict) -> bool:
-        """冒险今天是否已结束：不可继续 / 未配置次数 / 当天次数已满。
-        只看配额不看 start_time——主任务没结束就不退出调度器，等冒险到点。"""
-        if self._dead(tasks, 'adventure') or not self.adventure_times:
-            return True
-        _, done, _ = load_progress(ADVENTURE_PROGRESS_FILE, quiet=True)
-        return done >= self.adventure_times
-
-    def _hire_friend_done(self, tasks: dict) -> bool:
-        """雇佣好友今天是否已结束：不可继续 / 未启用或未配置 / 当天次数已满。
-        只看配额不看 start_time——主任务没结束就不退出调度器，等雇佣到点。"""
-        if self._dead(tasks, 'hire_friend'):
-            return True
-        hf = self.hire_friend.cfg.hire_friend
-        if not hf.enabled or not hf.times_per_day or not hf.friend_name.strip():
-            return True
-        _, done, _ = load_progress(HIRE_FRIEND_PROGRESS_FILE, quiet=True)
-        return done >= hf.times_per_day
-
     def _main_finished(self, tasks: dict) -> bool:
-        """主任务组（冒险/学习/打工/雇佣好友）今天是否已全部结束：
-        学习不可继续或学习工作时长达上限，打工不可继续，冒险/雇佣好友当天结束，
-        且组内没有进行中的 pending（pending 未收尾不能退出，否则丢失计数）。"""
+        """主任务组今天是否已全部结束：计划表所有条目完成（或计划停用），
+        或当前剩余条目对应的执行任务当天已不可继续（dead）；组内有进行中的
+        pending 时不算结束（pending 未收尾不能退出，否则丢失计数）。"""
         if self._main_pending_scen() is not None:
             return False
-        study_s, work_s = self._load_durations()
-        school_done = (self._dead(tasks, 'school')
-                       or self._duration_over(study_s, work_s))
-        return (school_done and self._dead(tasks, 'work')
-                and self._adventure_done(tasks) and self._hire_friend_done(tasks))
+        ctx: dict = {}
+        item = self._plan_current(ctx)
+        if item is None:
+            return True  # 今日计划已完成 / 计划停用
+        keys = self._work_executors() if item.activity == 'work' else [item.activity]
+        return not any(self._executor_alive(k, tasks) for k in keys)
 
     def _sleep_until_next(self, tasks: dict, order: list) -> bool:
-        """没有任务可执行时的等待：睡到最近的等待点（退避/每日窗口/pending 收尾时间），
+        """没有任务可执行时的等待：睡到最近的等待点（退避/pending 收尾时间），
         上限 QUEUE_POLL_INTERVAL 短轮询（顺带热加载配置）。
-        主任务当天结束后只等支线任务的失败退避，没有则返回 False（正常结束）。"""
+        主任务组当天结束后只等支线任务的失败退避，没有则返回 False（正常结束）。"""
         now = datetime.now()
         if self._main_finished(tasks):
             future = [task.next_at for key in order if key in SIDE_TASK_KEYS
                       for task in (tasks[key],)
                       if task.cfg.enabled and not task.dead and task.next_at > now]
             if not future:
-                log('冒险/学习/打工/雇佣好友都已达当天上限，结束')
+                log('今日计划已完成，支线任务也没有待重试的，调度器结束')
                 return False
             at = min(future)
             log(f'主任务组当天已结束，还有支线任务等待到 {at:%H:%M}，调度器等待')
@@ -1445,16 +1392,10 @@ class TaskQueueRunner(Runner):
         future = []
         for key in order:
             task = tasks[key]
-            cfg = task.cfg
-            if not cfg.enabled:
+            if not task.cfg.enabled:
                 continue
             if not task.dead and task.next_at > now:
                 future.append(task.next_at)
-            if cfg.trigger == 'daily':
-                # dead 的 daily 任务在下一个每日时间点复活，也算等待点
-                nxt = self._next_daily_time(cfg.daily_times, now)
-                if nxt:
-                    future.append(nxt)
         # 主任务组 pending（进行中活动）的收尾时间也是等待点
         for scen in (self.adventure, self.school, self.hire_friend, self.work):
             if scen.pending is not None and scen.pending['until'] > now:
@@ -1486,9 +1427,10 @@ def run_test(name: str) -> None:
     scenarios = {'school': SchoolScenario, 'work': WorkScenario,
                  'adventure': AdventureScenario, 'care': CareScenario,
                  'visit': VisitScenario, 'pk': PKScenario,
-                 'friend_care': FriendCareScenario, 'hire_friend': FriendHireScenario}
+                 'friend_care': FriendCareScenario, 'hire_friend': FriendHireScenario,
+                 'svip': SvipScenario}
     if scen_name not in scenarios or not method:
-        raise ValueError(f'--test 参数无效: {name!r}，应为 coins / recover 或 school./work./adventure./care./friend_care. 开头的方法名')
+        raise ValueError(f'--test 参数无效: {name!r}，应为 coins / recover 或 school./work./adventure./care./friend_care./svip. 开头的方法名')
     scen = scenarios[scen_name]()
     fn = getattr(scen, method, None)
     if not callable(fn):
@@ -1501,6 +1443,9 @@ def run_test(name: str) -> None:
 def run_scheduler() -> None:
     """按 config.yaml 的 runner.engine 选择调度引擎运行（控制台与 GUI 打包后的
     --runner 子进程共用，保证两边引擎一致）。"""
+    from src.settings import migrate_tasks_order
+
+    migrate_tasks_order()  # 老配置缺新任务键（如 svip）时自动补进 tasks.order
     engine = str(getattr(load_config().runner, 'engine', 'task_queue')).strip()
     if engine not in ('task_queue', 'legacy'):
         log(f'runner.engine 配置无效: {engine!r}，使用默认 task_queue')

@@ -105,7 +105,11 @@ class SchoolScenario(DeviceScenario):
         回主页面，返回 'graduated'，由 run() 重新进学校选择下一阶段课程；
         正常情况返回 None。
         """
-        self.leave_home()
+        left = self.leave_home()
+        if left:
+            # 忙碌主页面（宠物正在学习/打工/冒险，底部是活动进度条、没有"出门"）：
+            # 已登记 pending 延时收尾，本轮不再导航（run() 看到 pending 直接结束本轮）
+            return left
         finished = self.wait_busy_end()
         if finished:
             self.ensure_main_page()

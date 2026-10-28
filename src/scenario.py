@@ -1,6 +1,7 @@
 """场景基类：设备连接、截图、u2/OCR 定位点击、通用导航。"""
 from __future__ import annotations
 
+import random
 import time
 from datetime import datetime, timedelta
 
@@ -8,7 +9,7 @@ from .config import find_adb, load_config
 from .locators import LOCATORS, invalidate_bounds_cache, ocr_screen
 from .locators import see as locate
 from .locators import see_all as locate_all
-from .ocr import parse_employed_ratio, parse_employed_remaining
+from .ocr import parse_employed_ratio, parse_employed_remaining, parse_home_busy
 from .progress import (
     HIRE_FRIEND_PROGRESS_FILE,
     count_cross,
@@ -18,6 +19,9 @@ from .progress import (
 from .u2dev import U2Device
 
 # ---- 可调参数 ----
+GAME_PACKAGE = 'com.tencent.mobileqq'  # QQ 宠物所在宿主 App；前台不是它就停止操作
+# 盖在主页上的护理浮层（各自带道具节点）：有这些节点说明当前不在可操作的主页
+HOME_OVERLAY_SIGNS = ('feed_10', 'exchange_food', 'shower_10', 'buy_soap')
 CLICK_INTERVAL = 1.0       # 连续点击/重试间隔（秒）
 NAV_TIMEOUT = 10           # 单个阶段最多重试次数，超过认为卡死抛异常
 MAIN_PAGE_ATTEMPTS = 10    # 回主页面最多尝试次数（识别 main_sign / 点 back）
@@ -26,12 +30,22 @@ LEAVE_HOME_ATTEMPTS = 3    # 点击出门失败（点完 main_sign 仍在主页�
 WAIT_LOG_INTERVAL = 300.0  # 长等待期间的心跳日志间隔（秒），避免每轮检测刷屏
 ENCOURAGE_LOG_INTERVAL = 300.0  # "鼓励宠物"点击日志节流间隔（秒）：按钮每 ~12s 出现，避免刷屏
 EMPLOYED_MAX_WAIT_MINUTES = 45  # 被雇佣"等到25/75（小于45min）"：面板剩余时间超过该值立即召回
+EMPLOYED_GONE_ATTEMPTS = 4     # 等召回时连续多少轮看不到"被雇佣中"面板就认为雇佣已自然结束
+# （真机 bug：雇佣自己到期回主页后，原循环只认"召回条件满足"一个出口，会永远卡死）
 DEFER_DETECTION_ATTEMPTS = 3    # 延时收尾模式判定进行中/结束状态的检测次数
 DEFER_FALLBACK_SECONDS = 15     # OCR 识别不到剩余时间时的兜底重估间隔（秒）：
 # 原本 60s 会让一开始的收尾预估多等近 1 分钟（用户实测收尾偏晚），
 # 缩短后尽早复查，OCR 通常下一轮就能读到真实剩余并收敛到准确收尾时间
 DEFER_END_MARGIN_SECONDS = 1    # 剩余时间换算收尾时间点时加的余量（秒）
 FINISH_DETECTION_ATTEMPTS = 5   # finish_pending 出门后检测结算页/进行中状态的重试次数
+
+# 进行中活动：kind -> (进行中标志, 结束标志, 中文名)
+IN_PROGRESS_NAMES = {
+    'school': ('school_in', 'school_end', '上课'),
+    'work': ('work_in', 'work_end', '打工'),
+    'adventure': ('adventure_in', 'adventure_end', '冒险'),
+}
+ACTIVITY_LABELS = {'school': '学习', 'work': '打工', 'adventure': '冒险', 'employed': '被雇佣'}
 
 
 class TaskDeferred(Exception):
@@ -92,6 +106,42 @@ class DeviceScenario:
     def snapshot(self):
         """抓一轮检测用的快照：(屏幕截图, 控件树快照)。"""
         return self.screen(), self.dev.hierarchy()
+
+    def ensure_game_foreground(self) -> None:
+        """确认前台是 QQ；不是就立刻停手，避免在别的 App 上盲点/盲拖。
+
+        真机事故：用户在脚本运行期间切到支付宝，搓洗循环仍在固定坐标上
+        拖拽，等于对着支付页面乱划。这里宁可让任务失败走恢复链路，也不能
+        继续在别的应用上注入触摸事件。
+        """
+        pkg = self.dev.current_package()
+        if pkg and not pkg.startswith(GAME_PACKAGE):
+            raise RuntimeError(
+                f'当前前台应用是 {pkg}，不是 QQ（{GAME_PACKAGE}），'
+                '已停止操作以免误触其他应用')
+
+    def _on_main_page(self, screen=None, source=None):
+        """主页面判定：金币胶囊在，且没有喂食/洗澡面板盖在上面。
+
+        喂食/洗澡面板是浮层，底下主页的控件树节点（含金币胶囊）仍然存在且
+        坐标不变，只看金币胶囊会把面板页当成"可操作的主页"，随后在面板上
+        点出门/按键直到超时（2026-10-19 00:00:48 真机截图即此现场）。
+        面板本身有饼干/香皂道具节点，靠它排除，不用"出门按钮"——宠物打工中
+        主页底部是"打工"进度而不是"出门"，用出门判定会把正常主页误判成非主页。
+        """
+        if source is None:
+            # 一次判定要查 5 个定位，共用同一份控件树，别每个都重新 dump
+            source = self.dev.hierarchy()
+        hit = self.see('main_sign', screen, source)
+        if not hit:
+            return None
+        if self.home_overlay_open(screen, source):
+            return None
+        return hit
+
+    def home_overlay_open(self, screen=None, source=None) -> bool:
+        """主页上是否盖着喂食/洗澡面板（浮层，会挡住出门等主页按钮）。"""
+        return any(self.see(name, screen, source) for name in HOME_OVERLAY_SIGNS)
 
     def see_all(self, name: str, screen=None):
         """定位 name 的所有命中（OCR 多点），按从上到下排序。"""
@@ -201,9 +251,17 @@ class DeviceScenario:
         checks = max(1, int(getattr(self.cfg.schedule, 'main_page_checks', 1) or 1))
         max_attempts = MAIN_PAGE_ATTEMPTS * checks
         misses = 0
+        self.ensure_game_foreground()
         for attempt in range(1, max_attempts + 1):
             screen, source = self.snapshot()
-            hit = self.see('main_sign', screen, source)
+            if self.home_overlay_open(screen, source):
+                # 喂食/洗澡面板没有自己的返回图标：控件树里的 back 是浮层底下
+                # 主页那个，点它的坐标只会落在浮层上。这里直接按系统返回键关闭。
+                log('喂食/洗澡面板盖在主页上，按系统返回关闭')
+                self.dev.d.press('back')
+                time.sleep(CLICK_INTERVAL)
+                continue
+            hit = self._on_main_page(screen, source)
             if hit:
                 log(f'已在主页面 (score={hit[2]:.2f})')
                 return source
@@ -283,28 +341,109 @@ class DeviceScenario:
             if i < drags - 1:  # sleep 只在两次拖动之间，最后一次拖完不再多等
                 time.sleep(0.3)
 
-    def leave_home(self) -> None:
-        """主页面点击出门（OCR 定位"出门"，识别不到由注册表用参考坐标兜底）。
+    def detect_home_busy(self, screen=None) -> tuple[str, int] | None:
+        """主页面忙碌态：宠物正在学习/打工/冒险时，主页底部是活动进度条
+        （「学习 00:26:46」倒计时）而不是"出门"按钮（2026-10-21 真机截图）。
+        返回 (活动类型, 剩余秒数) 或 None。不点"出门"、不改变页面。"""
+        if screen is None:
+            screen = self.screen()
+        hit = parse_home_busy(ocr_screen(screen), screen.shape[0])
+        if not hit:
+            return None
+        kind, secs, _x, _y, _score = hit
+        return kind, secs
+
+    def _handle_home_busy(self, busy: tuple[str, int], mode: str) -> str | None:
+        """主页面忙碌态处理（leave_home 识别到进度条后调用）。
+
+        mode=defer：登记 pending（延时收尾，on_finish 按 kind 交叉计数）并返回
+        活动类型，调度器到点由 finish_pending 收尾；间隙去跑支线任务。
+        mode=wait：原地等倒计时结束（进度条消失）再返回 None，调用方继续出门
+        （legacy 阻塞语义；等完出门后结算页由 wait_busy_end 的结算检测兜底）。
+        mode=skip：不登记不等待，直接返回活动类型，由调用方跳过本轮。
+        """
+        kind, secs = busy
+        in_name, end_name, desc = IN_PROGRESS_NAMES[kind]
+        if mode == 'skip':
+            log(f'宠物正在{desc}（剩余约 {secs} 秒），主页面没有"出门"按钮，跳过本轮')
+            return kind
+        if mode == 'wait':
+            log(f'宠物正在{desc}（剩余约 {secs} 秒），主页面没有"出门"按钮，等待结束后再出门')
+            last_log_at = time.monotonic()
+            while True:
+                time.sleep(max(1.0, min(float(secs) + 1.0, self.check_interval)))
+                nxt = self.detect_home_busy()
+                if nxt is None:
+                    log(f'{desc}已结束（进度条消失），继续出门')
+                    return None
+                secs = nxt[1]
+                now = time.monotonic()
+                if now - last_log_at >= WAIT_LOG_INTERVAL:
+                    log(f'仍在{desc}中（剩余约 {secs} 秒）...')
+                    last_log_at = now
+        # defer：登记 pending，先回主页面调度其他任务（鼓励按钮只在进行中页面，
+        # 忙碌主页没有，这里不做鼓励，交由 finish_pending 的兜底）
+        until = datetime.now() + timedelta(seconds=secs + DEFER_END_MARGIN_SECONDS)
+        self.pending = {'in_name': in_name, 'end_name': end_name, 'until': until,
+                        'on_finish': lambda k=kind: count_cross(k), 'desc': desc,
+                        'encourage': kind in ('school', 'work')}
+        log(f'检测到宠物正在{desc}（主页面无"出门"，剩余约 {secs} 秒），'
+            f'预计 {until:%H:%M:%S} 收尾，先调度其他任务')
+        return kind
+
+    def leave_home(self, on_busy: str | None = None) -> str | None:
+        """主页面点击出门（xpath 定位"出门"，找不到直接报错，不做坐标兜底）。
+
+        宠物正在学习/打工/冒险时主页面底部是活动进度条、没有"出门"按钮，
+        盲点 3 次只会抛异常退出调度器：识别到忙碌态就按 on_busy 处理
+        （见 _handle_home_busy）：
+        - 'defer'：登记 pending 延时收尾并返回活动类型（主任务场景默认）；
+        - 'wait'：原地等进度条消失再出门（legacy 阻塞引擎默认）；
+        - 'skip'：不登记不等待，直接返回活动类型，调用方自行跳过；
+        - None：按 defer_wait 选 'defer' / 'wait'。
+        返回 None 表示已正常出门；返回活动类型表示没出门（忙碌态）。
 
         点完检测一次 main_sign（金币胶囊，只有主页面有）：仍识别到 = 还在主页面 =
         点击失败/没生效，重试点击；最多 LEAVE_HOME_ATTEMPTS 次仍失败抛异常，
         由调用方走回主页面重试/恢复链路。"""
-        for attempt in range(1, LEAVE_HOME_ATTEMPTS + 1):
-            hit = self.see('leave_home')
-            if hit:
-                self.click(hit[0], hit[1])
+        if on_busy is None:
+            on_busy = 'defer' if self.defer_wait else 'wait'
+        attempts = 0
+        while attempts < LEAVE_HOME_ATTEMPTS:
+            screen, source = self.snapshot()
+            hit = self.see('leave_home', screen, source)
+            if not hit:
+                busy = self.detect_home_busy(screen)
+                if busy:
+                    left = self._handle_home_busy(busy, on_busy)
+                    if left is not None:
+                        return left
+                    continue  # 阻塞模式已等到活动结束：重新找"出门"（不计失败次数）
+                attempts += 1
+                log(f'未定位到"出门"按钮（{attempts}/{LEAVE_HOME_ATTEMPTS}）')
             else:
-                log(f'未定位到"出门"按钮（{attempt}/{LEAVE_HOME_ATTEMPTS}）')
+                attempts += 1
+                self.click(hit[0], hit[1])
             time.sleep(CLICK_INTERVAL)
             # 出门成功 = 主页面标志消失；还在主页面说明没点中/没生效
-            if not self.see('main_sign'):
-                return
+            if not self._on_main_page(None, self.dev.hierarchy()):
+                return None
             # 页面切换动画可能让 main_sign 短暂残留，多等一轮再判定
             time.sleep(CLICK_INTERVAL)
-            if not self.see('main_sign'):
-                return
-            log(f'点击出门后仍在主页面，重试点击出门（{attempt}/{LEAVE_HOME_ATTEMPTS}）')
-        raise RuntimeError(f'点击出门 {LEAVE_HOME_ATTEMPTS} 次后仍停留在主页面')
+            if not self._on_main_page(None, self.dev.hierarchy()):
+                return None
+            # 点了"出门"却还在主页面：先怀疑是忙碌主页（学习/打工/冒险进度条）。
+            # 真机遇到过忙碌主页仍能匹配到"出门"节点、点了没反应的情况，这里兜住，
+            # 否则会连点三次后告警退出（2026-10-22 报障）。
+            busy = self.detect_home_busy()
+            if busy:
+                left = self._handle_home_busy(busy, on_busy)
+                if left is not None:
+                    return left
+                continue  # 阻塞模式已等到活动结束：重新找"出门"（不计失败次数）
+            log(f'点击出门后仍在主页面，重试点击出门（{attempts}/{LEAVE_HOME_ATTEMPTS}）')
+        raise RuntimeError(
+            f'{LEAVE_HOME_ATTEMPTS} 次尝试后仍未离开主页面（找不到"出门"按钮或点击无效）')
 
     def wait_end(self, in_name: str, end_name: str, check_interval: float | None = None,
                  encourage: bool = False) -> None:
@@ -329,7 +468,7 @@ class DeviceScenario:
             cur = self.see(in_name, screen, source)
             if cur:
                 self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
-            if encourage:
+            if encourage and self._encourage_allowed():
                 enc = self.see('encourage_pet', screen, source)
                 if enc:
                     # 静默点击；日志按 ENCOURAGE_LOG_INTERVAL 节流（按钮每 ~12s 出现一次）
@@ -445,6 +584,7 @@ class DeviceScenario:
         if check_interval is None:
             check_interval = self.check_interval
         last_log_at = 0.0
+        gone_rounds = 0  # 连续未见"被雇佣中"面板的轮数
         while True:
             # 本循环全是 OCR 定位（剩余时间/分成比例/被雇佣中），
             # 不需要控件树快照（dump 一次 1~4s），只截图即可
@@ -454,7 +594,17 @@ class DeviceScenario:
             # 点击一次被雇佣画面防止设备休眠
             cur = self.see('employed_in', screen)
             if cur:
+                gone_rounds = 0
                 self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
+            else:
+                # 面板连续多轮消失：雇佣可能已自然到期（结算回主页）。
+                # 原实现只有"召回条件满足"一个出口，雇佣自然结束后这里会
+                # 无限空转、整个调度器卡死（真机踩过）。
+                gone_rounds += 1
+                if gone_rounds >= EMPLOYED_GONE_ATTEMPTS:
+                    log('被雇佣状态已自然结束（找不到被雇佣面板），返回主页面')
+                    self.ensure_main_page()
+                    return
             now = time.monotonic()
             if now - last_log_at >= WAIT_LOG_INTERVAL:
                 log('仍在被雇佣中...')
@@ -475,9 +625,18 @@ class DeviceScenario:
         命中进行中状态则 OCR 剩余时间，返回 (kind, 剩余秒数)；OCR 不到
         剩余时间按 DEFER_FALLBACK_SECONDS 兜底。四种状态都未命中返回 None。
         用于雇佣好友等场景在出发前主动延后，与 wait_busy_end 的阻塞等待互补。
-        调用前需已在主页面（内部直接 leave_home）。
+        调用前需已在主页面。忙碌主页面（底部活动进度条）直接读倒计时返回——
+        这时主页面根本没有"出门"按钮，不必（也不能）出门再看活动面板。
         """
-        self.leave_home()
+        busy = self.detect_home_busy()
+        if busy:
+            log(f'主页面检测到宠物正在{ACTIVITY_LABELS[busy[0]]}（剩余约 {busy[1]} 秒）')
+            return busy
+        left = self.leave_home()
+        if left:
+            # 检测后到出门前又进入忙碌态（竞态）：按进行中处理
+            secs = self.read_remaining_seconds() or DEFER_FALLBACK_SECONDS
+            return left, secs
         time.sleep(0.5)  # 出门后活动面板有几秒加载延迟
         signs = {'school_in': 'school', 'work_in': 'work',
                  'adventure_in': 'adventure', 'employed_in': 'employed'}
@@ -527,6 +686,19 @@ class DeviceScenario:
                 time.sleep(CLICK_INTERVAL)
         raise RuntimeError(f'{desc}: 未检测到进行中或结束状态')
 
+    def _encourage_allowed(self) -> bool:
+        """按 schedule.encourage_probability 掷一次判定。
+
+        100（默认）= 每次都点，与加这个字段之前的行为完全一致；0 = 从不鼓励；
+        中间值表示"发现鼓励按钮的这一次检查有几成概率去点"。
+        """
+        probability = int(getattr(self.cfg.schedule, 'encourage_probability', 100) or 0)
+        if probability >= 100:
+            return True
+        if probability <= 0:
+            return False
+        return random.randint(1, 100) <= probability
+
     def _encourage_burst(self) -> None:
         """在"鼓励宠物"按钮可见的页面上快速点击 schedule.encourage_times 次。
 
@@ -537,6 +709,9 @@ class DeviceScenario:
         """
         times = int(getattr(self.cfg.schedule, 'encourage_times', 0) or 0)
         if times <= 0:
+            return
+        if not self._encourage_allowed():
+            log('鼓励概率未命中，本轮不鼓励')
             return
         clicked = 0
         # 先找一次按钮位置（see 是全树 dump ~0.8s，按钮位置固定；找到后单轮连点
@@ -574,7 +749,17 @@ class DeviceScenario:
         # 学习/打工/雇佣好友不停留在进行中页面，下一次主任务调度点出门后
         # 才会出现 end 结算页面：先回主页面再出门
         self.ensure_main_page()
-        self.leave_home()
+        # 收尾点到了活动还没结束（OCR 倒计时偏短/游戏计时误差）：主页面仍是
+        # 活动进度条、没有"出门"按钮 -> 重估收尾时间继续等，不盲点出门
+        busy = self.detect_home_busy()
+        if busy:
+            self._reestimate_pending(busy[1])
+            return False
+        left = self.leave_home(on_busy='skip')
+        if left:
+            # 检测后到出门前又变忙碌（竞态）：按兜底重估
+            self._reestimate_pending(self.read_remaining_seconds())
+            return False
         in_progress = False
         for _attempt in range(FINISH_DETECTION_ATTEMPTS):
             screen, source = self.snapshot()
@@ -613,13 +798,21 @@ class DeviceScenario:
         if pend.get('encourage'):
             # 还在进行中：鼓励按钮在进行中页面常驻，离开前就地点击
             self._encourage_burst()
-        secs = self.read_remaining_seconds()
+        self._reestimate_pending(self.read_remaining_seconds())
+        self.ensure_main_page()
+        return False
+
+    def _reestimate_pending(self, secs: int | None) -> None:
+        """pending 到点但活动未结束：按最新剩余时间重估收尾点
+        （OCR 不到剩余时间按 DEFER_FALLBACK_SECONDS 兜底）。"""
+        pend = self.pending
+        if pend is None:
+            return
         if secs is None:
             secs = DEFER_FALLBACK_SECONDS
         pend['until'] = datetime.now() + timedelta(seconds=secs + DEFER_END_MARGIN_SECONDS)
-        log(f"{pend['desc']}: 尚未结束，重估剩余 {secs} 秒（{pend['until']:%H:%M:%S} 再收尾）")
-        self.ensure_main_page()
-        return False
+        log(f"{pend['desc']}: 尚未结束，重估剩余 {secs} 秒"
+            f"（{pend['until']:%H:%M:%S} 再收尾）")
 
     def _defer_busy(self, kind: str, screen) -> bool:
         """出门检测到进行中且 defer_wait 开启：OCR 剩余时间登记 pending 返回 True
@@ -634,10 +827,7 @@ class DeviceScenario:
         # 不能算进收尾余量（否则估算偏晚：冒险无鼓励所以准，上课/打工有鼓励就晚
         # 鼓励耗时那么多秒）
         read_at = datetime.now()
-        names = {'school': ('school_in', 'school_end', '上课'),
-                 'work': ('work_in', 'work_end', '打工'),
-                 'adventure': ('adventure_in', 'adventure_end', '冒险')}
-        in_name, end_name, desc = names[kind]
+        in_name, end_name, desc = IN_PROGRESS_NAMES[kind]
         if kind in ('school', 'work'):
             # 鼓励按钮只在进行中页面常驻（结算页没有），登记 pending 离开前就地点击
             self._encourage_burst()
@@ -729,7 +919,9 @@ class DeviceScenario:
             # 重新开始本轮检测，避免挡住进行中状态检测
             if self.dismiss_career_popup(screen):
                 self.ensure_main_page()
-                self.leave_home()
+                left = self.leave_home()
+                if left:
+                    return left
                 continue
             # 结算页（上次活动已结束未收尾）：点 quit 收尾并返回对应类型（计数同
             # 等完活动的语义；"打工总结"含雇佣好友名称时 _detect_settlement 已计雇佣）。

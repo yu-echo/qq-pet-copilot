@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 # Windows 下隐藏 adb 子进程的命令行窗口（exe 无控制台模式下每次调用都会闪窗）
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -28,6 +29,17 @@ class AdbError(RuntimeError):
     pass
 
 
+def _launch_error(path: str, exc: OSError) -> AdbError:
+    """把"adb 可执行文件启动不了"翻译成用户能照着做的提示。"""
+    return AdbError(
+        f'无法启动 adb：{path}\n'
+        f'原因：{type(exc).__name__}: {exc}\n'
+        '请在设置页或 config.yaml 的 adb.path 填写 adb.exe 的完整路径；'
+        '也可以把 platform-tools 的 adb.exe、AdbWinApi.dll、AdbWinUsbApi.dll '
+        '一起放到程序目录的 resources\\scrcpy-win64\\ 下。'
+    )
+
+
 class Device:
     def __init__(self, adb_path: str, serial: str = ""):
         self.adb = adb_path
@@ -35,14 +47,49 @@ class Device:
 
     # ---- 基础命令 ----
 
+    def _exec(self, cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+        """执行 adb 命令；adb 文件不在了就重新定位一次，仍失败抛可读的 AdbError。
+
+        Windows 上 adb.exe 被临时锁住/清理（杀毒扫描、临时目录清理）时，
+        CreateProcess 会直接抛 FileNotFoundError，冒泡出去就是一条 WinError 2
+        加堆栈，用户看不懂也没法处理；这里重试一次并把原因写清楚。
+        """
+        try:
+            return subprocess.run(cmd, **kwargs)
+        except OSError as e:
+            if self._relocate_adb():
+                cmd = [self.adb] + cmd[1:]
+            time.sleep(0.5)
+            try:
+                return subprocess.run(cmd, **kwargs)
+            except OSError as retry_error:
+                raise _launch_error(self.adb, retry_error) from None
+
+    def _relocate_adb(self) -> bool:
+        """当前 adb 路径已失效时重新按配置/PATH/常见目录找一次；换了路径返回 True。"""
+        if Path(self.adb).is_file():
+            return False
+        from ..config import find_adb
+        from ..progress import log
+
+        try:
+            found = find_adb('')
+        except Exception:
+            return False
+        if not found or found == self.adb:
+            return False
+        log(f'adb 路径失效，改用 {found}')
+        self.adb = found
+        return True
+
     def _run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
         cmd = [self.adb]
         if self.serial:
             cmd += ["-s", self.serial]
         cmd += list(args)
-        proc = subprocess.run(cmd, capture_output=True, timeout=60,
-                              stdin=subprocess.DEVNULL,
-                              creationflags=_NO_WINDOW)
+        proc = self._exec(cmd, capture_output=True, timeout=60,
+                          stdin=subprocess.DEVNULL,
+                          creationflags=_NO_WINDOW)
         if check and proc.returncode != 0:
             raise AdbError(
                 f"adb 命令失败: {' '.join(cmd)}\n{proc.stderr.decode('utf-8', 'replace')}"
@@ -53,7 +100,7 @@ class Device:
 
     def online_devices(self) -> list[str]:
         """返回在线设备序列号列表（不依赖 self.serial）。"""
-        proc = subprocess.run(
+        proc = self._exec(
             [self.adb, "devices"], capture_output=True, timeout=30, check=True,
             stdin=subprocess.DEVNULL,
             creationflags=_NO_WINDOW,
@@ -88,9 +135,13 @@ class Device:
         target = serial or self.serial
         if not target or ":" not in target:
             return
-        subprocess.run([self.adb, "connect", target], capture_output=True, timeout=10,
+        try:
+            self._exec([self.adb, "connect", target], capture_output=True, timeout=10,
                        stdin=subprocess.DEVNULL,
                        creationflags=_NO_WINDOW, check=False)
+        except AdbError:
+            # connect 只是尽力而为，交给后续 ensure_connected 报"设备不在线"
+            pass
 
     def getprop(self, name: str) -> str:
         """读设备属性（ro.product.model 等），失败/为空返回空串。"""
@@ -98,6 +149,26 @@ class Device:
         if proc.returncode != 0:
             return ""
         return proc.stdout.decode("utf-8", "replace").strip()
+
+    def resumed_package(self) -> str:
+        """当前前台应用包名（取不到返回空串）。
+
+        uiautomator2 的 app_current() 在本机的 MIUI 上会返回别的 App（实测
+        屏幕停在 QQ 宠物页时先后返回过 com.tencent.mm / com.deepseek.chat），
+        不能用来判断"脚本是不是还在 QQ 里"。这里直接查系统 resumed activity。
+        """
+        proc = self._run(
+            "shell",
+            "dumpsys activity activities | grep -m1 topResumedActivity",
+            check=False,
+        )
+        if proc.returncode != 0:
+            return ""
+        match = re.search(
+            r"topResumedActivity=ActivityRecord\{\S+ u\d+ ([\w.]+)/",
+            proc.stdout.decode("utf-8", "replace"),
+        )
+        return match.group(1) if match else ""
 
     def screen_size(self) -> tuple[int, int]:
         out = self._run("shell", "wm", "size").stdout.decode("utf-8", "replace")

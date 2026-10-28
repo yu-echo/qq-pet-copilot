@@ -1,4 +1,5 @@
 """Profile dialog interaction checks; no phone or real configuration writes."""
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -13,6 +14,9 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QDialog
 
 
+@unittest.skipIf(os.environ.get('GITHUB_ACTIONS') == 'true',
+                 'GitHub Windows runner 无桌面会话，MainWindow 建原生窗口 + resize '
+                 '会直接崩进程；本套件仅本地执行')
 class ProfileDialogRegression(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

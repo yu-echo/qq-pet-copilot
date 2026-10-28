@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import copy
@@ -47,8 +48,13 @@ def resource_path(rel: str | Path) -> Path:
     if rel.is_absolute():
         return rel
     if getattr(sys, "frozen", False):
-        local = APP_ROOT / "runs" / rel
-        return local if local.exists() else RESOURCE_ROOT / rel
+        # runs/ 下的同名资源优先（可写数据目录，用户替换不重新打包），
+        # 其次 exe 同级（config.yaml 里 adb.path 填的相对路径就落在这里），
+        # 最后才用 PyInstaller 解压目录里的随包资源
+        for local in (APP_ROOT / "runs" / rel, APP_ROOT / rel):
+            if local.exists():
+                return local
+        return RESOURCE_ROOT / rel
     local = APP_ROOT / rel
     return local if local.exists() else RESOURCE_ROOT / rel
 
@@ -93,7 +99,7 @@ class WorkConfig:
     location: str = "风铃旅社"
     # 打工时长选择：10分钟（select_box_1）/ 45分钟（select_box_2）/ 2小时（select_box_3），
     # 打工与雇佣好友共用
-    duration: str = "45分钟"
+    duration: str = "10分钟"
     # 每天打工次数上限，0 为不限
     times_per_day: int = 0
     # 已不再使用：旧流程"下滑找雇佣按钮"已移除（当前页没有雇佣按钮时直接关闭面板开工），
@@ -119,6 +125,9 @@ class ScheduleConfig:
     # 鼓励次数：在学习/打工进行中页面快速点击"鼓励宠物"按钮的次数，0 为不鼓励
     # （非阻塞调度在登记 pending 离开进行中页面前就地点击；结算页没有该按钮）
     encourage_times: int = 10
+    # 鼓励概率（0-100）：进行中页面每次发现"鼓励宠物"按钮时，掷中才点鼓励。
+    # 100 = 每次都点（与加这个字段之前的行为完全一致），0 = 从不鼓励
+    encourage_probability: int = 100
     # 主页面检测次数：连续这么多次识别不到主页面标志（金币胶囊）才允许点 back
     # （主页面点 back 会退出游戏；默认 1 = 识别不到立即点 back，即原逻辑）
     main_page_checks: int = 1
@@ -132,16 +141,25 @@ class AdventureConfig:
     times_per_day: int = 1
     # 冒险调度时间（HH:MM），到达后优先冒险
     start_time: str = "08:00"
-    # 开始冒险后检测冒险详情框：出现"天色不对"就点召回->确认召回，计入一次冒险
-    skip_bad_weather: bool = False
-    # 一轮连跑的冒险次数（跑满后回主页面）
+    # 冒险时长选择：45秒（附近走走）/ 2小时（诗和远方）；默认选短的，
+    # 2 小时会长时间占住设备且按次计数不划算
+    duration: str = "45秒"
+    # 开始冒险后检测冒险详情框：出现"天色不对"就点召回->确认召回，计入一次冒险。
+    # 仅在冒险时长为 45 秒时生效（2 小时的冒险不触发天色不对召回）
+    skip_bad_weather: bool = True
+    # 已废弃：一轮连跑的冒险次数（每轮只跑一次，计划表接管每日次数）。
+    # 保留字段仅为兼容已有 config.yaml
     batch: int = 12
 
 
 @dataclass
 class CareConfig:
     # 护理方式：ocr检测（读宠物状态，低于阈值手动喂食/洗澡）/ 一键护理（直接点主页面的一键护理按钮）
-    method: str = "一键护理"
+    method: str = "ocr检测"
+    # 自动喂食：体力低于阈值时喂食；关掉则不判断体力，只做清洁
+    auto_feed: bool = True
+    # 自动洗护：清洁低于阈值时洗澡；关掉则不判断清洁，只做喂食
+    auto_bathe: bool = True
     # 体力阈值：低于则喂食到达标
     energy_threshold: int = 60
     # 清洁阈值：低于则洗澡到达标
@@ -168,15 +186,18 @@ class PkConfig:
 
 @dataclass
 class FriendCareConfig:
-    # 启用好友护理开关
+    # 启用好友护理开关（与经验日常合并：访问第一个好友，检测到可加经验就一键护理）
     enabled: bool = False
-    # 好友护理时间段（HH:MM-HH:MM）：到达开始时间后访问指定好友家护理，到结束时间退出场景
+    # 已废弃：好友护理时间段（不再按时间段调度，全天按间隔巡检）。
+    # 保留字段仅为兼容已有 config.yaml
     time_range: str = "14:00-19:30"
-    # 护理好友名称（好友列表 content-desc "好友 xxx" 里匹配）
+    # 已废弃：护理好友名称（不再检测名字，自动访问第一个好友）。
+    # 保留字段仅为兼容已有 config.yaml
     friend_name: str = ""
-    # 护理好友方式：ocr检测（读好友状态面板，体力/清洁护理到 90）/ 一键护理（点好友页的一键护理按钮）
+    # 已废弃：护理好友方式（统一为一键护理加经验）。
+    # 保留字段仅为兼容已有 config.yaml
     method: str = "ocr检测"
-    # 调度间隔（秒）：每次调度只做一次护理巡检，距上次巡检至少间隔这么久才再次调度
+    # 调度间隔（秒）：每次调度只做一次巡检，距上次巡检至少间隔这么久才再次调度
     interval_seconds: int = 60
 
 
@@ -184,19 +205,23 @@ class FriendCareConfig:
 class HireFriendConfig:
     # 雇佣好友开关
     enabled: bool = False
-    # 雇佣好友时间段（HH:MM-HH:MM，支持跨零点）：时间段内才调度雇佣
+    # 已废弃：雇佣好友时间段（不再按时间段调度，全天可用）。
+    # 保留字段仅为兼容已有 config.yaml
     time_range: str = "19:31-23:59"
-    # 调度间隔（秒）：距上次调度雇佣至少间隔这么久才再次调度（收尾后快速接下一轮）
+    # 已废弃：调度间隔（不再限制间隔，打工时每次都雇佣）。
+    # 保留字段仅为兼容已有 config.yaml
     interval_seconds: int = 5
-    # 雇佣好友名称（好友列表 content-desc "好友 xxx" 里匹配）
+    # 已废弃：雇佣好友名称（不再检测名字，自动选择第一个好友）。
+    # 保留字段仅为兼容已有 config.yaml
     friend_name: str = ""
-    # 每天雇佣好友次数，0 为不雇佣
+    # 已废弃：每天雇佣好友次数（不再按次数限制，打工时每次都雇佣）。
+    # 保留字段仅为兼容已有 config.yaml
     times_per_day: int = 8
 
 
 # 任务队列调度的任务键（tasks.order 里可配置的任务名）
 TASK_KEYS = ('care', 'adventure', 'visit', 'pk', 'hire_friend', 'friend_care',
-             'school', 'work')
+             'school', 'work', 'svip')
 # 主任务组：冒险/学习/打工/雇佣好友互斥（共用"出门-进行中"一条线，不能同时做），
 # 由 TaskQueueRunner 按 tasks.main_order 统一调度
 MAIN_TASK_KEYS = ('adventure', 'school', 'hire_friend', 'work')
@@ -206,10 +231,11 @@ MAIN_TASK_KEYS = ('adventure', 'school', 'hire_friend', 'work')
 class TaskItemConfig:
     # 单个任务的调度设置（config.yaml 的 tasks.<任务名> 段）
     enabled: bool = True
-    # trigger: interval=按间隔秒数 / daily=按每日时间点列表（到点打开一个执行窗口）
+    # trigger: interval=按间隔秒数；daily 与 daily_times 仅为兼容旧配置保留，
+    # 调度器已不再按每日时间点开窗（2026-10-21 起只按开关/时间窗/当天配额/退避判定）
     trigger: str = "interval"
     interval_seconds: int = 60
-    daily_times: list = field(default_factory=list)  # HH:MM 列表
+    daily_times: list = field(default_factory=list)  # HH:MM 列表（兼容字段，已不生效）
     # 允许执行的时间窗（HH:MM:SS-HH:MM:SS）
     enabled_time_range: str = "00:00:00-23:59:59"
     # 成功/失败后距下次执行的最小间隔（秒）
@@ -220,7 +246,7 @@ class TaskItemConfig:
 @dataclass
 class TasksConfig:
     # 执行顺序（> 分隔，越靠前越优先）；不在 order 里的任务不调度
-    order: str = "care>school>friend_care>hire_friend>adventure>visit>pk>work"
+    order: str = "svip>care>school>friend_care>hire_friend>adventure>visit>pk>work"
     # 主任务组（冒险/学习/打工/雇佣好友，互斥）组内优先级（> 分隔，越靠前越优先）；
     # 没列出的主任务按默认顺序兜底排最后
     main_order: str = "school>hire_friend>adventure>work"
@@ -235,27 +261,133 @@ class TasksConfig:
     friend_care: TaskItemConfig = field(default_factory=TaskItemConfig)
     school: TaskItemConfig = field(default_factory=TaskItemConfig)
     work: TaskItemConfig = field(default_factory=TaskItemConfig)
+    # 每日领取 QQ SVIP 会员礼包（默认每日时间点触发一次）
+    svip: TaskItemConfig = field(default_factory=lambda: TaskItemConfig(
+        trigger="daily", daily_times=["09:05"], success_interval=60))
+
+
+# 每日活动计划：可参与排队的活动、完成方式、学习可选属性
+PLAN_ACTIVITIES = ('school', 'work', 'adventure')
+PLAN_MODES = ('count', 'duration')          # 按次数 / 按时长
+PLAN_ATTRIBUTES = ('力量', '智力', '魅力')
+
+
+def duration_seconds(value) -> int:
+    """把「45秒 / 10分钟 / 2小时」换算成秒（识别不了按 0 处理）。"""
+    match = re.fullmatch(r'\s*(\d+)\s*(秒|分钟|小时)\s*', str(value or ''))
+    if not match:
+        return 0
+    amount = int(match.group(1))
+    return amount * {'秒': 1, '分钟': 60, '小时': 3600}[match.group(2)]
+
+
+@dataclass
+class PlanItemConfig:
+    """每日活动计划的一条（config.yaml 的 plan[] 元素）。
+
+    与旧的 school/work/adventure 分段参数并存：计划表是"做什么、做多少"，
+    旧分段参数仍是"怎么做"（打工地点、单次时长、冒险时长等）。计划条目里
+    留空的活动专属字段回落到旧分段参数，避免两处都要配。
+    """
+    activity: str = 'school'        # school / work / adventure
+    mode: str = 'count'             # count=按次数完成 / duration=按时长完成
+    count: int = 1                  # mode=count：今天做够几次算完成（>=1）
+    hours: float = 1.0              # mode=duration：今天累计做够几小时算完成（>0）
+    attribute: str = ''             # 学习：力量/智力/魅力（空=用 school.attribute）
+    work_location: str = ''         # 打工：地点（空=用 work.location）
+    work_duration: str = ''         # 打工：单次时长（空=用 work.duration）
+    adventure_duration: str = ''    # 冒险：单次时长 45秒/2小时（空=用 adventure.duration）
+
+
+def _normalize_plan_item(item: dict) -> dict:
+    """清洗一条计划：未知键丢弃、非法值回退，保证构造 dataclass 不抛异常。"""
+    valid = {k: v for k, v in (item or {}).items()
+             if k in PlanItemConfig.__dataclass_fields__}
+    activity = str(valid.get('activity') or 'school').strip()
+    if activity not in PLAN_ACTIVITIES:
+        activity = 'school'
+    mode = str(valid.get('mode') or 'count').strip()
+    if mode not in PLAN_MODES:
+        mode = 'count'
+    try:
+        count = int(valid.get('count', 1))
+    except (TypeError, ValueError):
+        count = 1
+    try:
+        hours = float(valid.get('hours', 1.0))
+    except (TypeError, ValueError):
+        hours = 1.0
+    return {
+        'activity': activity,
+        'mode': mode,
+        'count': max(1, count),
+        'hours': round(max(0.1, hours), 2),
+        'attribute': str(valid.get('attribute') or '').strip(),
+        'work_location': str(valid.get('work_location') or '').strip(),
+        'work_duration': str(valid.get('work_duration') or '').strip(),
+        'adventure_duration': str(valid.get('adventure_duration') or '').strip(),
+    }
+
+
+def parse_plan(raw_plan, school: 'SchoolConfig', work: 'WorkConfig',
+               adventure: 'AdventureConfig') -> 'PlanConfig':
+    """解析 config.yaml 的 plan 段；没有该段时按旧的分段参数生成默认三条。
+
+    旧配置里 school/work.times_per_day=0 表示"不限次数"，计划表没有"不限"
+    这个选项，统一按 1 次迁移（用户可在界面上直接改），并在日志里说明。
+    """
+    items: list[PlanItemConfig] = []
+    if isinstance(raw_plan, list) and raw_plan:
+        for entry in raw_plan:
+            if isinstance(entry, dict):
+                items.append(PlanItemConfig(**_normalize_plan_item(entry)))
+    if not items:
+        items = [
+            PlanItemConfig(activity='school', mode='count',
+                           count=max(1, int(school.times_per_day or 1)),
+                           attribute=school.attribute),
+            PlanItemConfig(activity='work', mode='count',
+                           count=max(1, int(work.times_per_day or 1)),
+                           work_location=work.location,
+                           work_duration=work.duration),
+            PlanItemConfig(activity='adventure', mode='count',
+                           count=max(1, int(adventure.times_per_day or 1)),
+                           adventure_duration=adventure.duration),
+        ]
+    return PlanConfig(items=items)
+
+
+@dataclass
+class PlanConfig:
+    # 自动控制总开关：关闭后不按每日计划执行（手动任务不受影响）
+    enabled: bool = True
+    # 每日活动计划（按列表顺序执行，做完一条再进下一条）
+    items: list = field(default_factory=list)
 
 
 @dataclass
 class RunnerConfig:
     # 调度引擎：task_queue（任务队列调度，默认）/ legacy（老主循环调度）
     engine: str = "task_queue"
+    # 成长福袋巡检开关（默认开）：启动后先检查一次，之后按间隔巡检
+    moneybag_enabled: bool = True
+    # 成长福袋巡检间隔（秒）：每次巡检会出门去好友家，别配得太密
+    moneybag_interval_seconds: int = 300
 
 
 @dataclass
 class RecoverConfig:
     # 异常恢复方式：重启设备（adb reboot，彻底）/ 重启游戏（只强停并重开 QQ，快）
-    method: str = "重启设备"
+    method: str = "重启游戏"
 
 
 
 @dataclass
 class EmployedConfig:
-    # 被雇佣开关：开启后按时间段+检查间隔出门检查是否被雇佣中
+    # 被雇佣开关：开启后全天按检查间隔出门检查是否被雇佣中
     enabled: bool = False
-    # 被雇佣时间段（HH:MM-HH:MM，支持跨零点）：时间段内定时检查，
-    # 且主任务（冒险/学习/打工/雇佣好友）不触发
+    # 已废弃：被雇佣时间段（不再按时间段调度，全天检查）。
+    # 保留字段仅为兼容已有 config.yaml
     time_range: str = "19:31-23:59"
     # 被雇佣检查间隔（秒）：距上次检查至少间隔这么久才再次出门检查
     interval_seconds: int = 60
@@ -271,6 +403,9 @@ class NotifyConfig:
     win_toast: bool = True
     # OnePush 推送配置（YAML，支持多行），如 {provider: bark, key: xxx}；留空不推送
     onepush_config: str = ""
+    # PushPlus 推送 token（常用告警渠道，设置页可填）：
+    # 留空则读环境变量 PUSHPLUS_TOKEN；值为敏感信息，日志/界面只显示是否已配置
+    pushplus_token: str = ""
 
 
 @dataclass
@@ -300,6 +435,7 @@ class Config:
     employed: EmployedConfig = field(default_factory=EmployedConfig)
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     tasks: TasksConfig = field(default_factory=TasksConfig)
+    plan: PlanConfig = field(default_factory=PlanConfig)
     recover: RecoverConfig = field(default_factory=RecoverConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
 
@@ -324,10 +460,26 @@ def find_adb(configured_path: str = "") -> str:
 
     for path in candidates:
         if path and Path(path).is_file():
+            if configured_path and path != candidates[0]:
+                _log_adb_fallback(candidates[0], path)
             return str(Path(path))
     raise FileNotFoundError(
         "找不到 adb。请安装 platform-tools，并在 config.yaml 的 adb.path 中填写 adb.exe 完整路径。"
     )
+
+
+_adb_fallback_warned: set[str] = set()
+
+
+def _log_adb_fallback(missing: str, used: str) -> None:
+    """配置的 adb 路径不存在时提示一次（同一路径只提示一次，避免轮询刷屏）。"""
+    if missing in _adb_fallback_warned:
+        return
+    _adb_fallback_warned.add(missing)
+    from .progress import log
+
+    log(f'配置的 adb 路径不存在：{missing}，已改用 {used}')
+
 
 
 @lru_cache(maxsize=4)
@@ -367,6 +519,13 @@ def load_config(config_path: str | Path | None = None) -> Config:
         tasks.failure_interval = int(raw_tasks["failure_interval"])
     for key in TASK_KEYS:
         getattr(tasks, key).failure_interval = tasks.failure_interval
+    # 分段参数先落地成局部变量：计划表的默认值要读它们，Config(...) 里也复用同一份
+    school = SchoolConfig(**raw.get("school", {}))
+    work = WorkConfig(**raw.get("work", {}))
+    adventure = AdventureConfig(**raw.get("adventure", {}))
+    plan = parse_plan(raw.get("plan"), school, work, adventure)
+    if isinstance(raw.get("plan_enabled"), bool):
+        plan.enabled = raw["plan_enabled"]
     return Config(
         adb=AdbConfig(**raw.get("adb", {})),
         control=ControlConfig(
@@ -374,10 +533,10 @@ def load_config(config_path: str | Path | None = None) -> Config:
                if k in ControlConfig.__dataclass_fields__}),
         gui=GuiConfig(**{k: v for k, v in (raw.get("gui", {}) or {}).items()
                          if k in GuiConfig.__dataclass_fields__}),
-        school=SchoolConfig(**raw.get("school", {})),
-        work=WorkConfig(**raw.get("work", {})),
+        school=school,
+        work=work,
         schedule=ScheduleConfig(**raw.get("schedule", {})),
-        adventure=AdventureConfig(**raw.get("adventure", {})),
+        adventure=adventure,
         care=CareConfig(**raw.get("care", {})),
         visit=VisitConfig(**raw.get("visit", {})),
         pk=PkConfig(**raw.get("pk", {})),
@@ -389,6 +548,7 @@ def load_config(config_path: str | Path | None = None) -> Config:
         runner=RunnerConfig(**{k: v for k, v in (raw.get("runner", {}) or {}).items()
                                if k in RunnerConfig.__dataclass_fields__}),
         tasks=tasks,
+        plan=plan,
         recover=RecoverConfig(**{k: v for k, v in raw.get("recover", {}).items() if k in RecoverConfig.__dataclass_fields__}),
         notify=NotifyConfig(**raw.get("notify", {})),
     )

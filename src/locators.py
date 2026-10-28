@@ -85,11 +85,14 @@ LOCATORS: dict[str, dict] = {
     'main_sign': {
         'xpath': ['//*[@content-desc="金币胶囊"]']
     },
-    # 主页面"出门"按钮（点击用）：xpath 优先，OCR 文字 + 参考坐标兜底
+    # 主页面"出门"按钮（点击用）：只用 xpath，不给 rel 兜底、也不缓存坐标。
+    # 之前配了 rel (359,1103) 做"必然命中"的点击兜底，结果宠物打工中/喂食洗澡
+    # 面板盖住主页时，"出门"节点根本不在控件树里，却仍按参考坐标盲点
+    # (598,2301)（真机日志 2026-10-19 00:00:44 连点 3 次），既点不中也掩盖了
+    # "当前不是可操作主页"这个事实；cache 同理——缓存只说明"曾经找到过"。
+    # 找不到就让调用方抛异常走恢复。
     'leave_home': {
-        'cache': True,
         'xpath': ['//*[@content-desc="出门"]'],
-        'rel': (359, 1103),
     },
     # 宠物状态面板展开/收起按钮（点击用）：xpath 优先，参考坐标兜底
     'pet_status': {
@@ -205,8 +208,21 @@ LOCATORS: dict[str, dict] = {
         # 不能加 cache：连跑衔接里要靠它判断是否真的进了冒险准备页，
         # 缓存会让 see() 在还没进准备页时也返回旧坐标（误报"已出现 adventure_start"，
         # 随后在出门页面傻点"开始"、adventure_in 永远不出现）
-        'xpath': ['//*[@content-desc="开始"]']},
+        # 2026-10 新版把按钮文案改成了"出发"，两种都认
+        'xpath': ['//*[@content-desc="出发"]',
+                  '//*[@content-desc="开始"]'],
+        'ocr': ['出发', '开始']},
     'adventure_in': {'ocr': ['正在冒险', '冒险中']},
+    # 冒险准备页的两个时长选项：卡片是 canvas 绘制的，控件树里**没有**卡片节点
+    # （只有"简介/消耗/奖励"三行文字随选中项变化），所以选项只能靠 OCR 找。
+    # 默认选"附近走走"（45 秒）：2 小时的"诗和远方"会长时间占住设备。
+    'adventure_short': {'ocr': ['附近走走']},
+    'adventure_long': {'ocr': ['诗和远方']},
+    # 选中态校验：简介文字随当前选中的时长变化，用它确认点击真的切过去了
+    'adventure_short_desc': {
+        'xpath': ['//*[contains(@content-desc, "在附近溜达")]']},
+    'adventure_long_desc': {
+        'xpath': ['//*[contains(@content-desc, "背上行囊去远方")]']},
     'adventure_end': {'xpath': ['//*[@content-desc="分享"]']},
     # 冒险详情框（"天色不对"检测）不再用 xpath 裁剪：游戏更新会改控件层级导致
     # xpath 失效，且实测下半屏整体 OCR 更快——recall_bad_weather 直接 OCR 下半屏
@@ -310,6 +326,26 @@ LOCATORS: dict[str, dict] = {
     'shower_10': {
         'xpath': ['//*[@content-desc="香皂片" or starts-with(@content-desc, "香皂片，剩余")]'],
     },
+
+    # ---- 每日领取 QQ SVIP 会员礼包 ----
+    # 主页宠物状态卡右侧图标列第二个（企鹅帽）。"点击有礼"小标签只在部分时候
+    # 渲染，不能只靠 OCR：模板匹配兜底（resources/svip-entry.png，
+    # 见 scenarios/svip.py 的 find_entry_icon），分辨率无关，不写死坐标。
+    'svip_entry': {
+        'xpath': ['//*[@content-desc="点击有礼"]'],
+        'ocr': ['点击有礼'],
+    },
+    # 礼包弹窗标题（"QQ SVIP专属礼包"；OCR 空格归一化后按子串匹配）
+    'svip_dialog': {'ocr': ['SVIP专属礼包']},
+    # 会员且今日未领：点帽图标即直接发放，弹"恭喜获得SVIP专属礼包"奖励页
+    #（真机实测：没有"立即领取"按钮，奖励页提示"点击空白处关闭"）
+    'svip_reward': {'ocr': ['恭喜获得SVIP专属礼包', '恭喜获得']},
+    # 会员且今日已领：按钮变为"明日再来"
+    'svip_tomorrow': {'ocr': ['明日再来']},
+    # 非会员：按钮为"开通 SVIP"（命中即代表账号无 SVIP，任务自动关闭并写回配置）
+    'svip_open': {'ocr': ['开通SVIP']},
+    # 礼包弹窗的小关闭按钮（兜底；主路径用系统返回键关弹窗）
+    'svip_close': {'xpath': ['//*[@content-desc="关闭"]']},
 }
 
 def see(

@@ -6,8 +6,8 @@ import json
 import re
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 from urllib.parse import urlparse, unquote
+from urllib.request import Request, urlopen
 
 
 @dataclass(slots=True)
@@ -82,7 +82,11 @@ def _pick_download_url(payload: dict) -> str:
 
 
 def _check_release_page(repo: str, current: str, timeout: float) -> UpdateCheckResult | None:
-    """Public latest-page redirect fallback, without API tokens or user data."""
+    """GitHub API 被限流/不可用时的兜底：读公开 Release 页面跳转地址。
+
+    不需要 token，也不涉及用户数据；API 403/429 或网络异常时仍能拿到
+    最新 tag（v1.41 上游同款做法）。
+    """
     try:
         request = Request(f'https://github.com/{repo}/releases/latest',
                           headers={'User-Agent': 'QQPetCopilot-UpdateChecker'})
@@ -99,7 +103,7 @@ def _check_release_page(repo: str, current: str, timeout: float) -> UpdateCheckR
         newer = _is_remote_newer(current, latest)
         return UpdateCheckResult(True, newer, current, latest, tag, url, url,
                                  '发现新版本' if newer else '当前已是最新版本')
-    except Exception:
+    except Exception:  # noqa: BLE001 - 兜底失败就按原错误返回
         return None
 
 

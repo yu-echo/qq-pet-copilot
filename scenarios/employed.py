@@ -16,7 +16,7 @@ from __future__ import annotations
 import time
 
 from src.progress import log
-from src.scenario import BUSY_GATE_ATTEMPTS, DeviceScenario
+from src.scenario import ACTIVITY_LABELS, BUSY_GATE_ATTEMPTS, DeviceScenario
 
 
 class EmployedScenario(DeviceScenario):
@@ -31,7 +31,12 @@ class EmployedScenario(DeviceScenario):
         """
         log(f'被雇佣检查: 出门查看是否被雇佣中（处理方式: {self.cfg.employed.action}）')
         self.ensure_main_page()
-        self.leave_home()
+        left = self.leave_home(on_busy='skip')
+        if left:
+            # 宠物正在学习/打工/冒险：主页面没有"出门"按钮，出不去也查不了；
+            # 这时也不可能是被雇佣状态，按巡检完成处理，间隔后再查
+            log(f'宠物正在{ACTIVITY_LABELS[left]}，跳过本次被雇佣检查')
+            return True
         # 出门后活动面板有几秒加载延迟，多检测几轮再下结论
         for attempt in range(1, BUSY_GATE_ATTEMPTS + 1):
             screen = self.screen()
